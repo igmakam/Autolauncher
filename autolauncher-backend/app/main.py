@@ -2440,7 +2440,7 @@ async def devbrain_review_session(
         )
         actions_taken.append(f"{action_type}: {comment}")
 
-    if review.get("review_result") == "stalled" and not review.get("needs_comment"):
+    if review.get("review_result") == "stalled" and not (review.get("needs_comment") and review.get("comment")):
         nudge = await agent.generate_nudge(
             session_title=session.get("app_name", "Unknown"),
             last_activity="recent",
