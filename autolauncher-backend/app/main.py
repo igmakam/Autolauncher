@@ -58,56 +58,6 @@ app.add_middleware(
 async def healthz():
     return {"status": "ok"}
 
-@app.post("/api/admin/fix-password")
-async def fix_password(db: aiosqlite.Connection = Depends(get_db)):
-    """One-time password fix + migrate data from old local DB to persistent volume if needed."""
-    import os, shutil
-    from app.database import DATABASE_PATH
-    
-    # Check if we need to migrate from old local DB to /data/app.db
-    old_local_db = os.path.join(os.path.dirname(__file__), "..", "app.db")
-    old_local_db = os.path.abspath(old_local_db)
-    migrated = False
-    
-    if DATABASE_PATH == "/data/app.db" and os.path.exists(old_local_db) and os.path.abspath(DATABASE_PATH) != old_local_db:
-        # Check if persistent DB has the user
-        cursor = await db.execute("SELECT COUNT(*) FROM users WHERE email = ?", ("marcel.kamon@gmail.com",))
-        count = (await cursor.fetchone())[0]
-        if count == 0:
-            # Copy old DB to persistent location
-            await db.close()
-            shutil.copy2(old_local_db, DATABASE_PATH)
-            # Also copy WAL/SHM if they exist
-            for ext in ["-wal", "-shm"]:
-                if os.path.exists(old_local_db + ext):
-                    shutil.copy2(old_local_db + ext, DATABASE_PATH + ext)
-            migrated = True
-    
-    # Reconnect after potential migration
-    import aiosqlite
-    db2 = await aiosqlite.connect(DATABASE_PATH)
-    db2.row_factory = aiosqlite.Row
-    
-    # Now fix the password
-    new_hash = hash_password("Admin123!")
-    cursor = await db2.execute("SELECT id, email, password_hash FROM users WHERE email = ?", ("marcel.kamon@gmail.com",))
-    row = await cursor.fetchone()
-    if not row:
-        await db2.close()
-        return {"error": "User not found even after migration", "db_path": DATABASE_PATH, "old_db": old_local_db, "old_exists": os.path.exists(old_local_db)}
-    
-    await db2.execute("UPDATE users SET password_hash = ? WHERE email = ?", (new_hash, "marcel.kamon@gmail.com"))
-    await db2.commit()
-    
-    # Verify
-    cursor2 = await db2.execute("SELECT password_hash FROM users WHERE email = ?", ("marcel.kamon@gmail.com",))
-    row2 = await cursor2.fetchone()
-    works = verify_password("Admin123!", dict(row2)["password_hash"])
-    await db2.close()
-    
-    return {"message": "Password reset done", "db_path": DATABASE_PATH, "migrated": migrated, "verify_works": works}
-
-
 # ==================== AUTH ====================
 
 @app.post("/api/auth/register", response_model=TokenResponse)

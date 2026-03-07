@@ -1,5 +1,6 @@
 import aiosqlite
 import os
+import bcrypt
 
 DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/app.db")
 
@@ -255,6 +256,15 @@ async def init_db():
             await db.execute(col_sql)
         except Exception:
             pass  # Column already exists
+
+    # Seed default user if not exists (ensures user survives deploys without persistent volume)
+    cursor = await db.execute("SELECT id FROM users WHERE email = ?", ("marcel.kamon@gmail.com",))
+    if not await cursor.fetchone():
+        pw_hash = bcrypt.hashpw("Admin123!".encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        await db.execute(
+            "INSERT INTO users (email, password_hash, full_name, created_at) VALUES (?, ?, ?, datetime('now'))",
+            ("marcel.kamon@gmail.com", pw_hash, "Marcel Kamon")
+        )
 
     await db.commit()
     await db.close()
