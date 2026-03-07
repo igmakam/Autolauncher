@@ -1862,3 +1862,110 @@ async def helixa_create_app_from_brief(
 
     await db.commit()
     return {"message": f"Project '{app_name}' created from HELIXA idea", "project_id": project_id}
+
+
+# ==================== ADMIN DATA SEED ====================
+
+@app.post("/api/admin/seed")
+async def seed_data(
+    data: dict,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """Seed/restore data for current user's project. Requires auth."""
+    user_id = int(current_user["sub"])
+    project_id = data.get("project_id")
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id required")
+
+    # Verify project belongs to user
+    cursor = await db.execute("SELECT id FROM projects WHERE id = ? AND user_id = ?", (project_id, user_id))
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    now = datetime.now(timezone.utc).isoformat()
+    results = {}
+
+    # Seed store listings
+    for listing in data.get("store_listings", []):
+        await db.execute(
+            """INSERT INTO store_listings
+               (project_id, platform, locale, title, subtitle, description, keywords,
+                whats_new, promotional_text, category, secondary_category, pricing_model,
+                price, privacy_url, support_url, marketing_url, aso_score, aso_tips,
+                viral_hooks, growth_strategies, competitor_analysis, generated_by_ai, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(project_id, platform, locale) DO UPDATE SET
+               title=excluded.title, subtitle=excluded.subtitle, description=excluded.description,
+               keywords=excluded.keywords, whats_new=excluded.whats_new, promotional_text=excluded.promotional_text,
+               category=excluded.category, aso_score=excluded.aso_score, aso_tips=excluded.aso_tips,
+               viral_hooks=excluded.viral_hooks, growth_strategies=excluded.growth_strategies,
+               competitor_analysis=excluded.competitor_analysis, updated_at=excluded.updated_at""",
+            (project_id, listing.get("platform", "ios"), listing.get("locale", "en-US"),
+             listing.get("title", ""), listing.get("subtitle", ""), listing.get("description", ""),
+             listing.get("keywords", ""), listing.get("whats_new", ""), listing.get("promotional_text", ""),
+             listing.get("category", ""), listing.get("secondary_category", ""),
+             listing.get("pricing_model", "free"), listing.get("price", "0"),
+             listing.get("privacy_url", ""), listing.get("support_url", ""), listing.get("marketing_url", ""),
+             listing.get("aso_score", 0), json.dumps(listing.get("aso_tips", [])),
+             json.dumps(listing.get("viral_hooks", [])), json.dumps(listing.get("growth_strategies", [])),
+             listing.get("competitor_analysis", ""), 1, now, now)
+        )
+    results["store_listings"] = len(data.get("store_listings", []))
+
+    # Seed strategy
+    strategy = data.get("strategy")
+    if strategy:
+        await db.execute(
+            """INSERT INTO project_strategy (project_id, strategy_data, monetization_data, metrics_data,
+               mistakes_data, screenshot_tips, onboarding_tips, tokens_used, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(project_id) DO UPDATE SET
+               strategy_data=excluded.strategy_data, monetization_data=excluded.monetization_data,
+               metrics_data=excluded.metrics_data, mistakes_data=excluded.mistakes_data,
+               screenshot_tips=excluded.screenshot_tips, onboarding_tips=excluded.onboarding_tips,
+               updated_at=excluded.updated_at""",
+            (project_id, json.dumps(strategy.get("strategy_data", {})),
+             json.dumps(strategy.get("monetization_data", {})), json.dumps(strategy.get("metrics_data", {})),
+             json.dumps(strategy.get("mistakes_data", [])), json.dumps(strategy.get("screenshot_tips", [])),
+             json.dumps(strategy.get("onboarding_tips", [])), 0, now, now)
+        )
+        results["strategy"] = True
+
+    # Seed campaign content
+    for campaign in data.get("campaign_content", []):
+        await db.execute(
+            """INSERT INTO campaign_content (project_id, content_type, content_data, tokens_used, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(project_id, content_type) DO UPDATE SET
+               content_data=excluded.content_data, updated_at=excluded.updated_at""",
+            (project_id, campaign.get("content_type", ""), json.dumps(campaign.get("content_data", {})), 0, now, now)
+        )
+    results["campaign_content"] = len(data.get("campaign_content", []))
+
+    # Seed pipeline run
+    pipeline = data.get("pipeline")
+    if pipeline:
+        cursor = await db.execute(
+            "INSERT INTO pipeline_runs (project_id, status, started_at, completed_at, created_at) VALUES (?, ?, ?, ?, ?)",
+            (project_id, pipeline.get("status", "completed"), pipeline.get("started_at", now),
+             pipeline.get("completed_at", now), now)
+        )
+        run_id = cursor.lastrowid
+        for step in pipeline.get("steps", []):
+            await db.execute(
+                """INSERT INTO pipeline_steps (run_id, step_name, step_order, platform, status, log_output,
+                   error_message, started_at, completed_at, block_type, retry_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (run_id, step.get("step_name", ""), step.get("step_order", 0), step.get("platform", "both"),
+                 step.get("status", "completed"), step.get("log_output", ""), step.get("error_message", ""),
+                 step.get("started_at", now), step.get("completed_at", now),
+                 step.get("block_type", ""), step.get("retry_count", 0))
+            )
+        results["pipeline"] = {"run_id": run_id, "steps": len(pipeline.get("steps", []))}
+
+    # Update project status
+    new_status = data.get("project_status", "pipeline_done")
+    await db.execute("UPDATE projects SET status = ?, updated_at = ? WHERE id = ?", (new_status, now, project_id))
+
+    await db.commit()
+    return {"message": "Data seeded successfully", "results": results}
