@@ -4,12 +4,13 @@ import { api, DashboardData, Project, CredentialStatus } from '../lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Rocket, Settings, Plus, LogOut, BarChart3, Zap, Globe, Shield, Brain } from 'lucide-react';
+import { Rocket, Settings, Plus, LogOut, BarChart3, Zap, Globe, Shield, Brain, Code2 } from 'lucide-react';
 import SetupWizard from './SetupWizard';
 import ProjectFlow from './ProjectFlow';
 import HelixaModule from './HelixaModule';
+import Planter from './Planter';
 
-type View = 'dashboard' | 'setup' | 'project' | 'helixa';
+type View = 'dashboard' | 'setup' | 'project' | 'helixa' | 'planter';
 
 export default function Dashboard() {
   const { user, logout } = useAuth();
@@ -73,6 +74,10 @@ export default function Dashboard() {
 
   if (view === 'helixa') {
     return <HelixaModule onBack={() => { setView('dashboard'); loadData(); }} />;
+  }
+
+  if (view === 'planter') {
+    return <Planter onBack={() => { setView('dashboard'); loadData(); }} />;
   }
 
   if (loading) {
@@ -150,25 +155,45 @@ export default function Dashboard() {
           </Card>
         </div>
 
-        {/* HELIXA Module */}
-        <Card className="bg-indigo-900/20 border-indigo-800/30 mb-8 cursor-pointer hover:border-indigo-600 transition-colors" onClick={() => setView('helixa')}>
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-indigo-500/20 rounded-lg">
-                  <Brain className="w-6 h-6 text-indigo-400" />
+        {/* HELIXA + Planter Modules */}
+        <div className="grid md:grid-cols-2 gap-4 mb-8">
+          <Card className="bg-indigo-900/20 border-indigo-800/30 cursor-pointer hover:border-indigo-600 transition-colors" onClick={() => setView('helixa')}>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-indigo-500/20 rounded-lg">
+                    <Brain className="w-6 h-6 text-indigo-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-white font-semibold">HELIXA</h3>
+                    <p className="text-xs text-indigo-400">Idea Capture & Scoring</p>
+                  </div>
                 </div>
-                <div>
-                  <h3 className="text-white font-semibold">HELIXA</h3>
-                  <p className="text-xs text-indigo-400">Voice-First Idea Capture & Scoring System</p>
-                </div>
+                <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700">
+                  <Brain className="w-4 h-4 mr-1" /> Open
+                </Button>
               </div>
-              <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700">
-                <Brain className="w-4 h-4 mr-1" /> Open HELIXA
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+          <Card className="bg-emerald-900/20 border-emerald-800/30 cursor-pointer hover:border-emerald-600 transition-colors" onClick={() => setView('planter')}>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-emerald-500/20 rounded-lg">
+                    <Code2 className="w-6 h-6 text-emerald-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-white font-semibold">Planter</h3>
+                    <p className="text-xs text-emerald-400">Autonomous App Builder</p>
+                  </div>
+                </div>
+                <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700">
+                  <Code2 className="w-4 h-4 mr-1" /> Open
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
 
         {/* Setup Status */}
         <Card className="bg-slate-900/50 border-slate-800 mb-8">

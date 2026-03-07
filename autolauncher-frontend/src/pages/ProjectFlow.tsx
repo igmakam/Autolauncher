@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { api, Project, QuestionnaireQuestion, StoreListing, PipelineRun, GenerateResult, CredentialStatus, RFactor } from '../lib/api';
+import { api, Project, QuestionnaireQuestion, StoreListing, PipelineRun, GenerateResult, CredentialStatus, RFactor, HelixaIdeaSummary, HelixaIdea } from '../lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ArrowLeft, ArrowRight, Loader2, Sparkles, Rocket, Check, X, TrendingUp, Target, Zap, DollarSign, BarChart3, AlertTriangle, Star, Copy, Mail, Megaphone, FileText, Globe, Share2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Loader2, Sparkles, Rocket, Check, X, TrendingUp, Target, Zap, DollarSign, BarChart3, AlertTriangle, Star, Copy, Mail, Megaphone, FileText, Globe, Share2, Brain, ChevronRight } from 'lucide-react';
 
 interface Props {
   projectId: number | null;
@@ -43,11 +43,24 @@ export default function ProjectFlow({ projectId, onBack }: Props) {
   const [githubRepo, setGithubRepo] = useState('');
   const [platform, setPlatform] = useState('both');
 
+  // HELIXA ideas for auto-pull
+  const [helixaIdeas, setHelixaIdeas] = useState<HelixaIdeaSummary[]>([]);
+  const [helixaLoading, setHelixaLoading] = useState(false);
+  const [selectedHelixaId, setSelectedHelixaId] = useState<number | null>(null);
+
   useEffect(() => {
     api.questionnaire.questions().then(setQuestions).catch(console.error);
     api.credentials.status().then(setCredStatuses).catch(console.error);
     if (projectId) {
       loadProject(projectId);
+    }
+    // Load HELIXA ideas for create step
+    if (!projectId) {
+      setHelixaLoading(true);
+      api.helixa.ideas.list().then(ideas => {
+        setHelixaIdeas(ideas);
+        setHelixaLoading(false);
+      }).catch(() => setHelixaLoading(false));
     }
   }, [projectId]);
 
@@ -241,49 +254,110 @@ export default function ProjectFlow({ projectId, onBack }: Props) {
 
   // ==================== RENDER STEPS ====================
 
-  const renderCreate = () => (
-    <Card className="bg-slate-900/50 border-slate-800 max-w-2xl mx-auto">
-      <CardHeader>
-        <CardTitle className="text-white flex items-center gap-2">
-          <Rocket className="w-5 h-5 text-blue-400" /> New App Launch
-        </CardTitle>
-        <p className="text-sm text-slate-400">Create a new project to start the automated launch process</p>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div>
-          <Label className="text-slate-300">App Name *</Label>
-          <Input className="mt-1 bg-slate-800 border-slate-700 text-white" placeholder="My Amazing App"
-            value={name} onChange={e => setName(e.target.value)} />
-        </div>
-        <div>
-          <Label className="text-slate-300">Bundle ID</Label>
-          <Input className="mt-1 bg-slate-800 border-slate-700 text-white" placeholder="com.company.appname"
-            value={bundleId} onChange={e => setBundleId(e.target.value)} />
-        </div>
-        <div>
-          <Label className="text-slate-300">GitHub Repository URL</Label>
-          <Input className="mt-1 bg-slate-800 border-slate-700 text-white" placeholder="https://github.com/user/repo"
-            value={githubRepo} onChange={e => setGithubRepo(e.target.value)} />
-        </div>
-        <div>
-          <Label className="text-slate-300">Target Platform</Label>
-          <div className="flex gap-3 mt-2">
-            {['both', 'ios', 'android'].map(p => (
-              <button key={p} onClick={() => setPlatform(p)}
-                className={`px-4 py-2 rounded-lg border text-sm ${platform === p ? 'border-blue-500 bg-blue-500/20 text-white' : 'border-slate-700 text-slate-400'}`}>
-                {p === 'both' ? 'iOS + Android' : p === 'ios' ? 'iOS Only' : 'Android Only'}
-              </button>
-            ))}
+  const selectHelixaIdea = async (ideaId: number) => {
+    setSelectedHelixaId(ideaId);
+    try {
+      const idea: HelixaIdea = await api.helixa.ideas.get(ideaId);
+      setName(idea.idea_name || '');
+      const slug = (idea.idea_name || '').toLowerCase().replace(/[^a-z0-9]+/g, '.');
+      setBundleId(`com.${slug}.app`);
+    } catch { /* ignore */ }
+  };
+
+  const renderCreate = () => {
+    const scoreColor = (s: number) => s >= 8 ? 'text-green-400' : s >= 6 ? 'text-yellow-400' : 'text-red-400';
+
+    return (
+      <div className="max-w-3xl mx-auto space-y-6">
+        {/* HELIXA Ideas Pull */}
+        {helixaIdeas.length > 0 && (
+          <Card className="bg-indigo-900/20 border-indigo-800/30">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-indigo-400 text-base flex items-center gap-2">
+                <Brain className="w-5 h-5" /> Import from HELIXA
+              </CardTitle>
+              <p className="text-xs text-slate-400">Select an idea from HELIXA to auto-populate your project</p>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                {helixaIdeas.map(idea => (
+                  <div
+                    key={idea.id}
+                    onClick={() => selectHelixaIdea(idea.id)}
+                    className={`p-3 rounded-lg cursor-pointer transition-all border flex items-center justify-between ${
+                      selectedHelixaId === idea.id
+                        ? 'bg-indigo-900/40 border-indigo-500'
+                        : 'bg-slate-800/30 border-slate-700 hover:border-indigo-600/50'
+                    }`}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <h4 className="text-white font-medium text-sm truncate">{idea.idea_name}</h4>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <Badge className="bg-indigo-500/20 text-indigo-400 text-xs px-1.5 py-0">{idea.product_type}</Badge>
+                        <span className="text-xs text-slate-500">{new Date(idea.created_at).toLocaleDateString()}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-lg font-bold ${scoreColor(idea.overall_score)}`}>{idea.overall_score}</span>
+                      {selectedHelixaId === idea.id ? <Check className="w-4 h-4 text-indigo-400" /> : <ChevronRight className="w-4 h-4 text-slate-500" />}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+        {helixaLoading && (
+          <div className="flex items-center gap-2 text-indigo-400 text-sm justify-center">
+            <Loader2 className="w-4 h-4 animate-spin" /> Loading HELIXA ideas...
           </div>
-        </div>
-        {error && <p className="text-red-400 text-sm">{error}</p>}
-        <Button onClick={handleCreate} disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700">
-          {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ArrowRight className="w-4 h-4 mr-2" />}
-          Continue to Questionnaire
-        </Button>
-      </CardContent>
-    </Card>
-  );
+        )}
+
+        {/* Create form */}
+        <Card className="bg-slate-900/50 border-slate-800">
+          <CardHeader>
+            <CardTitle className="text-white flex items-center gap-2">
+              <Rocket className="w-5 h-5 text-blue-400" /> New App Launch
+            </CardTitle>
+            <p className="text-sm text-slate-400">{selectedHelixaId ? 'Imported from HELIXA - review and continue' : 'Create a new project to start the automated launch process'}</p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <Label className="text-slate-300">App Name *</Label>
+              <Input className="mt-1 bg-slate-800 border-slate-700 text-white" placeholder="My Amazing App"
+                value={name} onChange={e => setName(e.target.value)} />
+            </div>
+            <div>
+              <Label className="text-slate-300">Bundle ID</Label>
+              <Input className="mt-1 bg-slate-800 border-slate-700 text-white" placeholder="com.company.appname"
+                value={bundleId} onChange={e => setBundleId(e.target.value)} />
+            </div>
+            <div>
+              <Label className="text-slate-300">GitHub Repository URL</Label>
+              <Input className="mt-1 bg-slate-800 border-slate-700 text-white" placeholder="https://github.com/user/repo"
+                value={githubRepo} onChange={e => setGithubRepo(e.target.value)} />
+            </div>
+            <div>
+              <Label className="text-slate-300">Target Platform</Label>
+              <div className="flex gap-3 mt-2">
+                {['both', 'ios', 'android'].map(p => (
+                  <button key={p} onClick={() => setPlatform(p)}
+                    className={`px-4 py-2 rounded-lg border text-sm ${platform === p ? 'border-blue-500 bg-blue-500/20 text-white' : 'border-slate-700 text-slate-400'}`}>
+                    {p === 'both' ? 'iOS + Android' : p === 'ios' ? 'iOS Only' : 'Android Only'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {error && <p className="text-red-400 text-sm">{error}</p>}
+            <Button onClick={handleCreate} disabled={loading} className="w-full bg-blue-600 hover:bg-blue-700">
+              {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <ArrowRight className="w-4 h-4 mr-2" />}
+              Continue to Questionnaire
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  };
 
   const renderQuestionnaire = () => {
     const q = questions[currentQ];
