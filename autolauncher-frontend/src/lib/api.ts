@@ -338,8 +338,8 @@ export const api = {
       request<Project>('/api/projects', { method: 'POST', body: data }),
     update: (id: number, data: Partial<Project>) =>
       request<Project>(`/api/projects/${id}`, { method: 'PUT', body: data }),
-    delete: (id: number) =>
-      request<{ message: string }>(`/api/projects/${id}`, { method: 'DELETE' }),
+    delete: (id: number, password: string) =>
+      request<{ message: string }>(`/api/projects/${id}/delete`, { method: 'POST', body: { password } }),
   },
   questionnaire: {
     questions: () => request<QuestionnaireQuestion[]>('/api/questionnaire/questions'),

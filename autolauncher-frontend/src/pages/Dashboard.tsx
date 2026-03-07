@@ -4,7 +4,8 @@ import { api, DashboardData, Project, CredentialStatus } from '../lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Rocket, Settings, Plus, LogOut, BarChart3, Zap, Globe, Shield, Brain, Code2 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Rocket, Settings, Plus, LogOut, BarChart3, Zap, Globe, Shield, Brain, Code2, Trash2, X, Loader2 } from 'lucide-react';
 import SetupWizard from './SetupWizard';
 import ProjectFlow from './ProjectFlow';
 import HelixaModule from './HelixaModule';
@@ -21,6 +22,10 @@ export default function Dashboard() {
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [planterIdeaId, setPlanterIdeaId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
+  const [deleteProjectId, setDeleteProjectId] = useState<number | null>(null);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
   const loadData = async () => {
     try {
@@ -47,6 +52,22 @@ export default function Dashboard() {
   const openProject = (id: number) => {
     setSelectedProjectId(id);
     setView('project');
+  };
+
+  const handleDeleteProject = async () => {
+    if (!deleteProjectId || !deletePassword) return;
+    setDeleting(true);
+    setDeleteError('');
+    try {
+      await api.projects.delete(deleteProjectId, deletePassword);
+      setDeleteProjectId(null);
+      setDeletePassword('');
+      await loadData();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Failed to delete');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const statusColor = (status: string) => {
@@ -258,13 +279,22 @@ export default function Dashboard() {
               <Card key={p.id} className="bg-slate-900/50 border-slate-800 hover:border-slate-700 cursor-pointer transition-colors" onClick={() => openProject(p.id)}>
                 <CardContent className="p-4">
                   <div className="flex items-start justify-between mb-3">
-                    <div>
-                      <h3 className="font-semibold text-white">{p.name}</h3>
+                    <div className="flex-1 min-w-0 mr-2">
+                      <h3 className="font-semibold text-white truncate">{p.name}</h3>
                       <p className="text-xs text-slate-400">{p.bundle_id || 'No bundle ID'}</p>
                     </div>
-                    <Badge className={`${statusColor(p.status)} text-white text-xs`}>
-                      {statusLabel(p.status)}
-                    </Badge>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Badge className={`${statusColor(p.status)} text-white text-xs`}>
+                        {statusLabel(p.status)}
+                      </Badge>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setDeleteProjectId(p.id); setDeletePassword(''); setDeleteError(''); }}
+                        className="p-1 rounded hover:bg-red-500/20 text-slate-500 hover:text-red-400 transition-colors"
+                        title="Delete project"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                   <div className="flex items-center gap-4 text-xs text-slate-400">
                     <span>Platform: {p.platform}</span>
@@ -281,6 +311,40 @@ export default function Dashboard() {
           </div>
         )}
       </main>
+
+      {/* Delete confirmation dialog */}
+      {deleteProjectId !== null && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-sm w-full">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-white">Delete Project</h3>
+              <button onClick={() => { setDeleteProjectId(null); setDeletePassword(''); setDeleteError(''); }} className="text-slate-400 hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-sm text-slate-400 mb-4">Enter your password to confirm deletion. This action cannot be undone.</p>
+            <Input
+              type="password"
+              placeholder="Your password"
+              value={deletePassword}
+              onChange={e => setDeletePassword(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleDeleteProject()}
+              className="bg-slate-800 border-slate-700 text-white mb-3"
+              autoFocus
+            />
+            {deleteError && <p className="text-red-400 text-sm mb-3">{deleteError}</p>}
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1 border-slate-700 text-slate-300" onClick={() => { setDeleteProjectId(null); setDeletePassword(''); setDeleteError(''); }}>
+                Cancel
+              </Button>
+              <Button className="flex-1 bg-red-600 hover:bg-red-700 text-white" onClick={handleDeleteProject} disabled={!deletePassword || deleting}>
+                {deleting ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Trash2 className="w-4 h-4 mr-1" />}
+                Delete
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

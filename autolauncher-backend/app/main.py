@@ -377,13 +377,23 @@ async def update_project(
     return await get_project(project_id, current_user, db)
 
 
-@app.delete("/api/projects/{project_id}")
+class ProjectDeleteRequest(BaseModel):
+    password: str
+
+@app.post("/api/projects/{project_id}/delete")
 async def delete_project(
     project_id: int,
+    body: ProjectDeleteRequest,
     current_user: dict = Depends(get_current_user),
     db: aiosqlite.Connection = Depends(get_db)
 ):
     user_id = int(current_user["sub"])
+    # Verify password
+    cursor = await db.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,))
+    user_row = await cursor.fetchone()
+    if not user_row or not verify_password(body.password, user_row[0]):
+        raise HTTPException(status_code=403, detail="Incorrect password")
+    # Verify project belongs to user
     cursor = await db.execute("SELECT id FROM projects WHERE id = ? AND user_id = ?", (project_id, user_id))
     if not await cursor.fetchone():
         raise HTTPException(status_code=404, detail="Project not found")
