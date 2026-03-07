@@ -1980,3 +1980,242 @@ async def seed_data(
 
     await db.commit()
     return {"message": "Data seeded successfully", "results": results}
+
+
+# ==================== PLANTER (Devin API) ====================
+
+DEVIN_API_URL = "https://api.devin.ai/v1"
+DEVIN_API_KEY = os.getenv("DEVIN_API_KEY", "")
+
+
+class PlanterBuildRequest(PydanticBaseModel):
+    idea_id: int | None = None
+    idea_name: str = ""
+    idea_description: str = ""
+    tech_stack: dict | None = None
+    mvp_features: list[str] | None = None
+    custom_prompt: str = ""
+
+
+class PlanterMessageRequest(PydanticBaseModel):
+    message: str
+
+
+@app.post("/api/planter/build")
+async def planter_build(
+    req: PlanterBuildRequest,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """Create a new Devin session to autonomously build an app from a HELIXA idea."""
+    if not DEVIN_API_KEY:
+        raise HTTPException(status_code=500, detail="Devin API key not configured")
+
+    user_id = int(current_user["sub"])
+
+    # Build the prompt from idea data
+    idea_context = ""
+    if req.idea_id:
+        cursor = await db.execute(
+            "SELECT * FROM helixa_ideas WHERE id = ? AND user_id = ?",
+            (req.idea_id, user_id)
+        )
+        row = await cursor.fetchone()
+        if row:
+            idea = dict(row)
+            structured = json.loads(idea.get("structured_idea", "{}"))
+            build_brief = json.loads(idea.get("build_brief", "{}"))
+            idea_context = f"""
+App Name: {idea.get('idea_name', req.idea_name)}
+Problem: {structured.get('problem_statement', '')}
+Solution: {structured.get('proposed_solution', '')}
+Target Users: {structured.get('target_users', '')}
+Product Type: {idea.get('product_type', '')}
+Core Features: {json.dumps(build_brief.get('core_features', []))}
+MVP Scope: {json.dumps(build_brief.get('mvp_scope', []))}
+Suggested Tech Stack: {json.dumps(build_brief.get('suggested_tech_stack', {}))}
+User Flow: {json.dumps(build_brief.get('basic_user_flow', []))}
+Monetization: {build_brief.get('monetization_model', '')}
+"""
+
+    prompt = f"""Build a complete, production-ready web application based on this specification:
+
+{idea_context if idea_context else f"App: {req.idea_name}. Description: {req.idea_description}"}
+
+{f"Custom instructions: {req.custom_prompt}" if req.custom_prompt else ""}
+
+Requirements:
+1. Create a GitHub repo at github.com/igmakam/{req.idea_name.lower().replace(' ', '-').replace("'", '')}
+2. Build a React + Tailwind frontend and FastAPI backend
+3. Deploy frontend and backend to publicly accessible URLs
+4. Make sure the app is fully functional, not just a skeleton
+5. Test all endpoints and UI flows before marking as complete
+6. Share the deployed URLs when done
+
+Focus on building a polished, working MVP with real functionality."""
+
+    # Call Devin API to create session
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{DEVIN_API_URL}/sessions",
+                headers={
+                    "Authorization": f"Bearer {DEVIN_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={"prompt": prompt}
+            )
+            if resp.status_code != 200:
+                raise HTTPException(
+                    status_code=resp.status_code,
+                    detail=f"Devin API error: {resp.text}"
+                )
+            data = resp.json()
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Devin API timeout")
+
+    session_id = data.get("session_id", "")
+    session_url = data.get("url", f"https://app.devin.ai/sessions/{session_id.replace('devin-', '')}")
+
+    # Store the planter session in DB
+    now = datetime.now(timezone.utc).isoformat()
+    await db.execute(
+        """INSERT INTO planter_sessions
+           (user_id, idea_id, idea_name, devin_session_id, session_url, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (user_id, req.idea_id, req.idea_name, session_id, session_url, "running", now, now)
+    )
+    await db.commit()
+
+    return {
+        "session_id": session_id,
+        "session_url": session_url,
+        "status": "running",
+        "message": f"Devin session created for '{req.idea_name}'"
+    }
+
+
+@app.get("/api/planter/sessions")
+async def planter_list_sessions(
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """List all Planter build sessions for the current user."""
+    user_id = int(current_user["sub"])
+    cursor = await db.execute(
+        "SELECT * FROM planter_sessions WHERE user_id = ? ORDER BY created_at DESC",
+        (user_id,)
+    )
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.get("/api/planter/session/{session_id}")
+async def planter_get_session(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """Get status of a Planter build session from Devin API."""
+    if not DEVIN_API_KEY:
+        raise HTTPException(status_code=500, detail="Devin API key not configured")
+
+    user_id = int(current_user["sub"])
+
+    # Check ownership
+    cursor = await db.execute(
+        "SELECT * FROM planter_sessions WHERE devin_session_id = ? AND user_id = ?",
+        (session_id, user_id)
+    )
+    local_row = await cursor.fetchone()
+    if not local_row:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Fetch from Devin API
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                f"{DEVIN_API_URL}/session/{session_id}",
+                headers={"Authorization": f"Bearer {DEVIN_API_KEY}"}
+            )
+            if resp.status_code == 200:
+                devin_data = resp.json()
+            else:
+                devin_data = None
+    except Exception:
+        devin_data = None
+
+    local = dict(local_row)
+
+    # Update local status from Devin API
+    if devin_data:
+        new_status = devin_data.get("status_enum", devin_data.get("status", local["status"]))
+        title = devin_data.get("title", "")
+        pr_url = ""
+        if devin_data.get("pull_request"):
+            pr_url = devin_data["pull_request"].get("url", "")
+
+        now = datetime.now(timezone.utc).isoformat()
+        await db.execute(
+            """UPDATE planter_sessions SET status = ?, title = ?, pr_url = ?, updated_at = ?
+               WHERE devin_session_id = ?""",
+            (new_status, title, pr_url, now, session_id)
+        )
+        await db.commit()
+
+        local["status"] = new_status
+        local["title"] = title
+        local["pr_url"] = pr_url
+        local["devin_data"] = {
+            "status": devin_data.get("status"),
+            "status_enum": devin_data.get("status_enum"),
+            "title": title,
+            "created_at": devin_data.get("created_at"),
+            "updated_at": devin_data.get("updated_at"),
+            "pull_request": devin_data.get("pull_request"),
+            "structured_output": devin_data.get("structured_output"),
+        }
+
+    return local
+
+
+@app.post("/api/planter/session/{session_id}/message")
+async def planter_send_message(
+    session_id: str,
+    req: PlanterMessageRequest,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """Send a message/instruction to an active Devin session."""
+    if not DEVIN_API_KEY:
+        raise HTTPException(status_code=500, detail="Devin API key not configured")
+
+    user_id = int(current_user["sub"])
+    cursor = await db.execute(
+        "SELECT * FROM planter_sessions WHERE devin_session_id = ? AND user_id = ?",
+        (session_id, user_id)
+    )
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{DEVIN_API_URL}/session/{session_id}/message",
+                headers={
+                    "Authorization": f"Bearer {DEVIN_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={"message": req.message}
+            )
+            if resp.status_code != 200:
+                raise HTTPException(
+                    status_code=resp.status_code,
+                    detail=f"Devin API error: {resp.text}"
+                )
+            return resp.json()
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Devin API timeout")

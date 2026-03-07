@@ -312,6 +312,37 @@ export interface HelixaExperimentalStats {
   success_rate: number;
 }
 
+// ==================== PLANTER TYPES ====================
+
+export interface PlanterSession {
+  id: number;
+  user_id: number;
+  idea_id: number | null;
+  idea_name: string;
+  devin_session_id: string;
+  session_url: string;
+  status: string;
+  title: string;
+  pr_url: string;
+  frontend_url: string;
+  backend_url: string;
+  repo_url: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlanterSessionDetail extends PlanterSession {
+  devin_data?: {
+    status: string;
+    status_enum: string;
+    title: string;
+    created_at: string;
+    updated_at: string;
+    pull_request: { url: string } | null;
+    structured_output: Record<string, unknown> | null;
+  };
+}
+
 // ==================== API ====================
 
 export const api = {
@@ -431,5 +462,13 @@ export const api = {
       delete: (id: number) => request<{ message: string }>(`/api/helixa/experimental/${id}`, { method: 'DELETE' }),
     },
     importData: () => request<{ message: string; imported: { ideas: number; synthesized: number; experimental: number } }>('/api/helixa/import', { method: 'POST' }),
+  },
+  planter: {
+    build: (data: { idea_id?: number; idea_name: string; idea_description?: string; custom_prompt?: string }) =>
+      request<{ session_id: string; session_url: string; status: string; message: string }>('/api/planter/build', { method: 'POST', body: data }),
+    sessions: () => request<PlanterSession[]>('/api/planter/sessions'),
+    getSession: (sessionId: string) => request<PlanterSessionDetail>(`/api/planter/session/${sessionId}`),
+    sendMessage: (sessionId: string, message: string) =>
+      request<Record<string, unknown>>(`/api/planter/session/${sessionId}/message`, { method: 'POST', body: { message } }),
   },
 };

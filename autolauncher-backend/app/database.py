@@ -245,6 +245,24 @@ async def init_db():
             FOREIGN KEY (user_id) REFERENCES users(id),
             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS planter_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            idea_id INTEGER,
+            idea_name TEXT NOT NULL DEFAULT '',
+            devin_session_id TEXT NOT NULL DEFAULT '',
+            session_url TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'running',
+            title TEXT NOT NULL DEFAULT '',
+            pr_url TEXT NOT NULL DEFAULT '',
+            frontend_url TEXT NOT NULL DEFAULT '',
+            backend_url TEXT NOT NULL DEFAULT '',
+            repo_url TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
     """)
 
     # Add block_type and retry_count columns to pipeline_steps (safe for existing DBs)

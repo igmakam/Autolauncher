@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
-import { api, HelixaIdeaSummary, HelixaIdea } from '../lib/api';
+import { api, HelixaIdeaSummary, HelixaIdea, PlanterSession, PlanterSessionDetail } from '../lib/api';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import {
   ArrowLeft, Send, Loader2, Brain, Code2, Eye, Play,
-  Terminal, Check, Rocket, RefreshCw, ExternalLink,
-  FileCode, Layout, Database, Globe, Palette, Settings2
+  ExternalLink, FileCode, Globe, Rocket,
+  Clock, CheckCircle2, AlertCircle, MessageSquare,
+  GitPullRequest, History
 } from 'lucide-react';
 
 interface Props {
@@ -15,64 +16,31 @@ interface Props {
   initialIdeaId?: number | null;
 }
 
-interface BuildStep {
-  id: string;
-  label: string;
-  icon: typeof Code2;
-  status: 'pending' | 'active' | 'done' | 'error';
-  detail?: string;
-}
-
-interface ChatMessage {
-  role: 'user' | 'system' | 'assistant';
-  content: string;
-  timestamp: Date;
-}
-
-interface PlanterProject {
-  id: string;
-  name: string;
-  ideaId?: number;
-  ideaName?: string;
-  repoUrl?: string;
-  previewUrl?: string;
-  backendUrl?: string;
-  status: 'idle' | 'planning' | 'building' | 'deployed' | 'error';
-  stack: {
-    frontend: string;
-    backend: string;
-    database: string;
-    hosting: string;
-  };
-  buildSteps: BuildStep[];
-  chatHistory: ChatMessage[];
-}
-
-const DEFAULT_STEPS: BuildStep[] = [
-  { id: 'plan', label: 'Architecture Plan', icon: Layout, status: 'pending' },
-  { id: 'repo', label: 'Create GitHub Repo', icon: FileCode, status: 'pending' },
-  { id: 'backend', label: 'Build Backend API', icon: Database, status: 'pending' },
-  { id: 'frontend', label: 'Build Frontend UI', icon: Palette, status: 'pending' },
-  { id: 'integrate', label: 'Integration & Testing', icon: Settings2, status: 'pending' },
-  { id: 'deploy', label: 'Deploy to Production', icon: Globe, status: 'pending' },
-];
+type ViewMode = 'select' | 'building' | 'history';
 
 export default function Planter({ onBack, initialIdeaId }: Props) {
   const [ideas, setIdeas] = useState<HelixaIdeaSummary[]>([]);
-  const [, setSelectedIdea] = useState<HelixaIdea | null>(null);
   const [loading, setLoading] = useState(true);
-  const [project, setProject] = useState<PlanterProject | null>(null);
-  const [promptInput, setPromptInput] = useState('');
-  const [sending, setSending] = useState(false);
-  const [previewTab, setPreviewTab] = useState<'preview' | 'terminal'>('preview');
-  const [terminalLogs, setTerminalLogs] = useState<string[]>([
-    '$ planter init',
-    'Planter v1.0 - Autonomous App Builder',
-    'Ready. Select an idea or describe your app.',
-    ''
-  ]);
-  const chatEndRef = useRef<HTMLDivElement>(null);
-  const terminalEndRef = useRef<HTMLDivElement>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>('select');
+
+  // Building state
+  const [activeSession, setActiveSession] = useState<PlanterSessionDetail | null>(null);
+  const [buildingIdeaName, setBuildingIdeaName] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [messageInput, setMessageInput] = useState('');
+  const [sendingMessage, setSendingMessage] = useState(false);
+  const [pollInterval, setPollInterval] = useState<ReturnType<typeof setInterval> | null>(null);
+
+  // History state
+  const [sessions, setSessions] = useState<PlanterSession[]>([]);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+
+  // Custom build
+  const [customName, setCustomName] = useState('');
+  const [customDescription, setCustomDescription] = useState('');
+  const [showCustom, setShowCustom] = useState(false);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const init = async () => {
@@ -81,8 +49,7 @@ export default function Planter({ onBack, initialIdeaId }: Props) {
         setIdeas(ideasList);
         if (initialIdeaId) {
           const idea = await api.helixa.ideas.get(initialIdeaId);
-          setSelectedIdea(idea);
-          initProject(idea);
+          startBuild(idea);
         }
       } catch (e) {
         console.error(e);
@@ -91,216 +58,156 @@ export default function Planter({ onBack, initialIdeaId }: Props) {
       }
     };
     init();
+    return () => {
+      if (pollInterval) clearInterval(pollInterval);
+    };
   }, [initialIdeaId]);
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [project?.chatHistory?.length]);
-
-  useEffect(() => {
-    terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [terminalLogs.length]);
-
-  const initProject = (idea: HelixaIdea) => {
-    const slug = idea.idea_name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    const newProject: PlanterProject = {
-      id: `planter-${Date.now()}`,
-      name: idea.idea_name,
-      ideaId: idea.id,
-      ideaName: idea.idea_name,
-      status: 'idle',
-      stack: {
-        frontend: idea.build_brief?.suggested_tech_stack?.frontend || 'React + Vite + Tailwind',
-        backend: idea.build_brief?.suggested_tech_stack?.backend || 'FastAPI + Python',
-        database: idea.build_brief?.suggested_tech_stack?.database || 'Supabase (PostgreSQL)',
-        hosting: 'Render (backend) + Devinapps (frontend)',
-      },
-      buildSteps: DEFAULT_STEPS.map(s => ({ ...s })),
-      chatHistory: [
-        {
-          role: 'system',
-          content: `Project "${idea.idea_name}" initialized from HELIXA idea (Score: ${idea.overall_score}/10)`,
-          timestamp: new Date()
-        },
-        {
-          role: 'assistant',
-          content: `I've loaded the build brief for **${idea.idea_name}**.\n\n**Problem:** ${idea.build_brief?.problem || idea.structured_idea?.problem_statement}\n**Solution:** ${idea.build_brief?.solution || idea.structured_idea?.proposed_solution}\n\n**Suggested Stack:**\n- Frontend: ${idea.build_brief?.suggested_tech_stack?.frontend || 'React + Tailwind'}\n- Backend: ${idea.build_brief?.suggested_tech_stack?.backend || 'FastAPI'}\n- Database: ${idea.build_brief?.suggested_tech_stack?.database || 'Supabase'}\n\n**MVP Features:**\n${(idea.build_brief?.mvp_scope || idea.build_brief?.core_features || []).map((f: string) => `- ${f}`).join('\n')}\n\nType **"start building"** to begin the autonomous build process, or send me specific instructions.`,
-          timestamp: new Date()
-        }
-      ]
-    };
-    setProject(newProject);
-    addTerminalLog(`$ planter load --idea "${idea.idea_name}"`);
-    addTerminalLog(`Loaded build brief: ${(idea.build_brief?.core_features || []).length} core features`);
-    addTerminalLog(`Stack: React + FastAPI + Supabase`);
-    addTerminalLog(`GitHub repo: github.com/igmakam/${slug}`);
-    addTerminalLog('');
-  };
-
-  const selectIdea = async (id: number) => {
+  const startBuild = async (idea: HelixaIdea) => {
+    setCreating(true);
+    setBuildingIdeaName(idea.idea_name);
+    setViewMode('building');
     try {
-      const idea = await api.helixa.ideas.get(id);
-      setSelectedIdea(idea);
-      initProject(idea);
+      const result = await api.planter.build({
+        idea_id: idea.id,
+        idea_name: idea.idea_name,
+        idea_description: idea.structured_idea?.problem_statement || '',
+      });
+      const sessionDetail: PlanterSessionDetail = {
+        id: 0, user_id: 0, idea_id: idea.id, idea_name: idea.idea_name,
+        devin_session_id: result.session_id, session_url: result.session_url,
+        status: 'running', title: idea.idea_name, pr_url: '', frontend_url: '',
+        backend_url: '', repo_url: '', created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      setActiveSession(sessionDetail);
+      startPolling(result.session_id);
     } catch (e) {
       console.error(e);
+      setActiveSession({
+        id: 0, user_id: 0, idea_id: idea.id, idea_name: idea.idea_name,
+        devin_session_id: '', session_url: '', status: 'error',
+        title: 'Failed to create session', pr_url: '', frontend_url: '',
+        backend_url: '', repo_url: '', created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    } finally {
+      setCreating(false);
     }
   };
 
-  const addTerminalLog = (msg: string) => {
-    setTerminalLogs(prev => [...prev, msg]);
-  };
-
-  const simulateBuildStep = async (stepId: string, detail: string) => {
-    setProject(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        buildSteps: prev.buildSteps.map(s =>
-          s.id === stepId ? { ...s, status: 'active' as const, detail } : s
-        )
+  const startCustomBuild = async () => {
+    if (!customName.trim()) return;
+    setCreating(true);
+    setBuildingIdeaName(customName);
+    setViewMode('building');
+    try {
+      const result = await api.planter.build({
+        idea_name: customName,
+        idea_description: customDescription,
+      });
+      const sessionDetail: PlanterSessionDetail = {
+        id: 0, user_id: 0, idea_id: null, idea_name: customName,
+        devin_session_id: result.session_id, session_url: result.session_url,
+        status: 'running', title: customName, pr_url: '', frontend_url: '',
+        backend_url: '', repo_url: '', created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       };
-    });
-    addTerminalLog(`$ planter ${stepId} --start`);
-    addTerminalLog(detail);
-
-    // Simulate work
-    await new Promise(r => setTimeout(r, 2000 + Math.random() * 2000));
-
-    setProject(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        buildSteps: prev.buildSteps.map(s =>
-          s.id === stepId ? { ...s, status: 'done' as const, detail: `${detail} - Complete` } : s
-        )
-      };
-    });
-    addTerminalLog(`[OK] ${stepId} completed successfully`);
-    addTerminalLog('');
-  };
-
-  const handleSendPrompt = async () => {
-    if (!promptInput.trim() || !project) return;
-    const userMsg = promptInput.trim();
-    setPromptInput('');
-
-    // Add user message
-    setProject(prev => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        chatHistory: [...prev.chatHistory, { role: 'user', content: userMsg, timestamp: new Date() }]
-      };
-    });
-
-    setSending(true);
-
-    // Check if user wants to start building
-    const isBuildCommand = userMsg.toLowerCase().includes('start build') || userMsg.toLowerCase().includes('build it') || userMsg.toLowerCase().includes('lets go') || userMsg.toLowerCase().includes('begin');
-
-    if (isBuildCommand && project.status === 'idle') {
-      setProject(prev => prev ? { ...prev, status: 'building' } : prev);
-
-      // Add assistant response
-      setProject(prev => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          chatHistory: [...prev.chatHistory, {
-            role: 'assistant',
-            content: `Starting autonomous build for **${project.name}**! I'll work through each step and you can watch the progress in the terminal on the right. You can send me additional instructions at any time.`,
-            timestamp: new Date()
-          }]
-        };
-      });
-
-      addTerminalLog('$ planter build --autonomous');
-      addTerminalLog(`Starting build pipeline for "${project.name}"...`);
-      addTerminalLog('');
-
-      // Run build steps
-      const slug = (project.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      await simulateBuildStep('plan', 'Generating architecture plan from build brief...');
-
-      setProject(prev => {
-        if (!prev) return prev;
-        return { ...prev, chatHistory: [...prev.chatHistory, {
-          role: 'assistant',
-          content: `Architecture plan ready. Creating GitHub repository...`,
-          timestamp: new Date()
-        }]};
-      });
-
-      await simulateBuildStep('repo', `Creating github.com/igmakam/${slug}...`);
-      setProject(prev => prev ? { ...prev, repoUrl: `https://github.com/igmakam/${slug}` } : prev);
-
-      setProject(prev => {
-        if (!prev) return prev;
-        return { ...prev, chatHistory: [...prev.chatHistory, {
-          role: 'assistant',
-          content: `GitHub repo created at **github.com/igmakam/${slug}**. Building backend API...`,
-          timestamp: new Date()
-        }]};
-      });
-
-      await simulateBuildStep('backend', 'Scaffolding FastAPI backend with endpoints...');
-      setProject(prev => prev ? { ...prev, backendUrl: `https://${slug}-backend.onrender.com` } : prev);
-
-      await simulateBuildStep('frontend', 'Building React + Tailwind frontend UI...');
-
-      setProject(prev => {
-        if (!prev) return prev;
-        return { ...prev, chatHistory: [...prev.chatHistory, {
-          role: 'assistant',
-          content: `Frontend and backend built. Running integration tests...`,
-          timestamp: new Date()
-        }]};
-      });
-
-      await simulateBuildStep('integrate', 'Running integration tests and fixing issues...');
-
-      await simulateBuildStep('deploy', `Deploying to Render + Devinapps...`);
-      const previewUrl = `https://${slug}-app.devinapps.com`;
-      setProject(prev => prev ? { ...prev, status: 'deployed', previewUrl } : prev);
-
-      addTerminalLog('=== BUILD COMPLETE ===');
-      addTerminalLog(`Frontend: ${previewUrl}`);
-      addTerminalLog(`Backend: https://${slug}-backend.onrender.com`);
-      addTerminalLog(`Repo: https://github.com/igmakam/${slug}`);
-
-      setProject(prev => {
-        if (!prev) return prev;
-        return { ...prev, chatHistory: [...prev.chatHistory, {
-          role: 'assistant',
-          content: `Build complete! Your app is deployed:\n\n- **Frontend:** ${previewUrl}\n- **Backend:** https://${slug}-backend.onrender.com\n- **Repo:** https://github.com/igmakam/${slug}\n\nYou can see the live preview on the right. Send me any changes you'd like to make!`,
-          timestamp: new Date()
-        }]};
-      });
-    } else {
-      // Generic response
-      setTimeout(() => {
-        setProject(prev => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            chatHistory: [...prev.chatHistory, {
-              role: 'assistant',
-              content: project.status === 'idle'
-                ? `Got it! I'll incorporate that. Type **"start building"** when you're ready to begin the autonomous build.`
-                : project.status === 'deployed'
-                  ? `I'll make that change to the deployed app. Updating now...`
-                  : `Noted. I'm currently building - I'll incorporate your feedback into the current step.`,
-              timestamp: new Date()
-            }]
-          };
-        });
-        setSending(false);
-      }, 1000);
-      return;
+      setActiveSession(sessionDetail);
+      startPolling(result.session_id);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setCreating(false);
     }
+  };
 
-    setSending(false);
+  const startPolling = (sessionId: string) => {
+    if (pollInterval) clearInterval(pollInterval);
+    const interval = setInterval(async () => {
+      try {
+        const data = await api.planter.getSession(sessionId);
+        setActiveSession(data);
+        if (['finished', 'error', 'exit', 'suspended'].includes(data.status)) {
+          clearInterval(interval);
+          setPollInterval(null);
+        }
+      } catch (e) {
+        console.error('Poll error:', e);
+      }
+    }, 10000);
+    setPollInterval(interval);
+  };
+
+  const sendMessage = async () => {
+    if (!messageInput.trim() || !activeSession?.devin_session_id) return;
+    setSendingMessage(true);
+    try {
+      await api.planter.sendMessage(activeSession.devin_session_id, messageInput);
+      setMessageInput('');
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSendingMessage(false);
+    }
+  };
+
+  const loadHistory = async () => {
+    setLoadingSessions(true);
+    setViewMode('history');
+    try {
+      const data = await api.planter.sessions();
+      setSessions(data);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoadingSessions(false);
+    }
+  };
+
+  const viewSession = async (session: PlanterSession) => {
+    setViewMode('building');
+    setBuildingIdeaName(session.idea_name);
+    try {
+      const detail = await api.planter.getSession(session.devin_session_id);
+      setActiveSession(detail);
+      if (['running', 'working', 'blocked'].includes(detail.status)) {
+        startPolling(session.devin_session_id);
+      }
+    } catch {
+      setActiveSession(session as PlanterSessionDetail);
+    }
+  };
+
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case 'running': case 'working': return <Loader2 className="w-4 h-4 animate-spin text-yellow-400" />;
+      case 'blocked': return <AlertCircle className="w-4 h-4 text-orange-400" />;
+      case 'finished': return <CheckCircle2 className="w-4 h-4 text-green-400" />;
+      case 'error': case 'exit': return <AlertCircle className="w-4 h-4 text-red-400" />;
+      default: return <Clock className="w-4 h-4 text-slate-400" />;
+    }
+  };
+
+  const getStatusBadge = (status: string) => {
+    const colors: Record<string, string> = {
+      running: 'bg-yellow-500/20 text-yellow-400',
+      working: 'bg-yellow-500/20 text-yellow-400',
+      blocked: 'bg-orange-500/20 text-orange-400',
+      finished: 'bg-green-500/20 text-green-400',
+      error: 'bg-red-500/20 text-red-400',
+      exit: 'bg-red-500/20 text-red-400',
+      suspended: 'bg-slate-500/20 text-slate-400',
+    };
+    const labels: Record<string, string> = {
+      running: 'Building...', working: 'Building...', blocked: 'Needs Input',
+      finished: 'Complete', error: 'Error', exit: 'Stopped', suspended: 'Paused',
+    };
+    return (
+      <Badge className={`text-xs ${colors[status] || 'bg-slate-500/20 text-slate-400'}`}>
+        {labels[status] || status}
+      </Badge>
+    );
   };
 
   const scoreColor = (s: number) => s >= 8 ? 'text-green-400' : s >= 6 ? 'text-yellow-400' : 'text-red-400';
@@ -316,23 +223,23 @@ export default function Planter({ onBack, initialIdeaId }: Props) {
     );
   }
 
-  // Idea selection view (when no project started)
-  if (!project) {
+  // ==================== HISTORY VIEW ====================
+  if (viewMode === 'history') {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-950 via-emerald-950 to-slate-950">
         <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-sm">
           <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <Button variant="ghost" size="sm" onClick={onBack} className="text-slate-400 hover:text-white">
+              <Button variant="ghost" size="sm" onClick={() => setViewMode('select')} className="text-slate-400 hover:text-white">
                 <ArrowLeft className="w-4 h-4 mr-1" /> Back
               </Button>
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center">
-                  <Code2 className="w-5 h-5 text-white" />
+                  <History className="w-5 h-5 text-white" />
                 </div>
                 <div>
-                  <h1 className="text-lg font-bold text-white">Planter</h1>
-                  <p className="text-xs text-emerald-400">Autonomous App Builder</p>
+                  <h1 className="text-lg font-bold text-white">Build History</h1>
+                  <p className="text-xs text-emerald-400">Previous Devin sessions</p>
                 </div>
               </div>
             </div>
@@ -340,41 +247,45 @@ export default function Planter({ onBack, initialIdeaId }: Props) {
         </header>
 
         <main className="max-w-4xl mx-auto px-4 py-8">
-          <div className="text-center mb-8">
-            <h2 className="text-2xl font-bold text-white mb-2">Select an Idea to Build</h2>
-            <p className="text-slate-400">Choose a HELIXA idea and Planter will autonomously build the full app</p>
-          </div>
-
-          {ideas.length === 0 ? (
+          {loadingSessions ? (
+            <div className="text-center py-12">
+              <Loader2 className="w-8 h-8 animate-spin text-emerald-400 mx-auto" />
+              <p className="text-slate-400 mt-2">Loading sessions...</p>
+            </div>
+          ) : sessions.length === 0 ? (
             <Card className="bg-slate-900/50 border-slate-800">
               <CardContent className="p-12 text-center">
-                <Brain className="w-16 h-16 text-slate-600 mx-auto mb-4" />
-                <h3 className="text-xl font-semibold text-white mb-2">No ideas yet</h3>
-                <p className="text-slate-400 mb-4">Go to HELIXA first to capture and score your app ideas</p>
-                <Button onClick={onBack} className="bg-indigo-600 hover:bg-indigo-700">
-                  <ArrowLeft className="w-4 h-4 mr-1" /> Back to Dashboard
-                </Button>
+                <History className="w-16 h-16 text-slate-600 mx-auto mb-4" />
+                <h3 className="text-xl font-semibold text-white mb-2">No builds yet</h3>
+                <p className="text-slate-400">Start building an app from your ideas</p>
               </CardContent>
             </Card>
           ) : (
-            <div className="grid md:grid-cols-2 gap-4">
-              {ideas.map(idea => (
+            <div className="space-y-3">
+              {sessions.map(session => (
                 <Card
-                  key={idea.id}
+                  key={session.id}
                   className="bg-slate-900/50 border-slate-800 hover:border-emerald-600/50 cursor-pointer transition-all"
-                  onClick={() => selectIdea(idea.id)}
+                  onClick={() => viewSession(session)}
                 >
                   <CardContent className="p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <h3 className="font-semibold text-white truncate flex-1">{idea.idea_name}</h3>
-                      <span className={`text-xl font-bold ml-2 ${scoreColor(idea.overall_score)}`}>{idea.overall_score}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Badge className="bg-emerald-500/20 text-emerald-400 text-xs">{idea.product_type}</Badge>
-                      <span className="text-xs text-slate-500">{new Date(idea.created_at).toLocaleDateString()}</span>
-                    </div>
-                    <div className="mt-3 flex items-center gap-1 text-xs text-emerald-400">
-                      <Rocket className="w-3 h-3" /> Click to start building
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        {getStatusIcon(session.status)}
+                        <div>
+                          <h3 className="font-semibold text-white">{session.idea_name || session.title || 'Untitled'}</h3>
+                          <p className="text-xs text-slate-500">{new Date(session.created_at).toLocaleString()}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {getStatusBadge(session.status)}
+                        {session.session_url && (
+                          <Button size="sm" variant="ghost" className="text-slate-400 text-xs"
+                            onClick={(e) => { e.stopPropagation(); window.open(session.session_url, '_blank'); }}>
+                            <ExternalLink className="w-3 h-3" />
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   </CardContent>
                 </Card>
@@ -386,220 +297,307 @@ export default function Planter({ onBack, initialIdeaId }: Props) {
     );
   }
 
-  // Main builder view - split screen
-  return (
-    <div className="h-screen flex flex-col bg-slate-950">
-      {/* Header */}
-      <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-sm shrink-0">
-        <div className="px-4 py-2 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Button variant="ghost" size="sm" onClick={onBack} className="text-slate-400 hover:text-white">
-              <ArrowLeft className="w-4 h-4" />
-            </Button>
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 bg-emerald-600 rounded-lg flex items-center justify-center">
-                <Code2 className="w-4 h-4 text-white" />
-              </div>
-              <div>
-                <h1 className="text-sm font-bold text-white">{project.name}</h1>
-                <p className="text-xs text-emerald-400">Planter Builder</p>
+  // ==================== BUILDING VIEW ====================
+  if (viewMode === 'building') {
+    return (
+      <div className="h-screen flex flex-col bg-slate-950">
+        <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-sm shrink-0">
+          <div className="px-4 py-2 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Button variant="ghost" size="sm" onClick={() => { setViewMode('select'); setActiveSession(null); if (pollInterval) { clearInterval(pollInterval); setPollInterval(null); } }} className="text-slate-400 hover:text-white">
+                <ArrowLeft className="w-4 h-4" />
+              </Button>
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 bg-emerald-600 rounded-lg flex items-center justify-center">
+                  <Code2 className="w-4 h-4 text-white" />
+                </div>
+                <div>
+                  <h1 className="text-sm font-bold text-white">{buildingIdeaName}</h1>
+                  <p className="text-xs text-emerald-400">Planter Builder</p>
+                </div>
               </div>
             </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <Badge className={`text-xs ${
-              project.status === 'deployed' ? 'bg-green-500/20 text-green-400' :
-              project.status === 'building' ? 'bg-yellow-500/20 text-yellow-400 animate-pulse' :
-              project.status === 'error' ? 'bg-red-500/20 text-red-400' :
-              'bg-slate-500/20 text-slate-400'
-            }`}>
-              {project.status === 'deployed' ? 'Deployed' :
-               project.status === 'building' ? 'Building...' :
-               project.status === 'error' ? 'Error' : 'Ready'}
-            </Badge>
-            {project.previewUrl && (
-              <Button size="sm" variant="outline" className="border-emerald-700 text-emerald-400 text-xs"
-                onClick={() => window.open(project.previewUrl, '_blank')}>
-                <ExternalLink className="w-3 h-3 mr-1" /> Open App
-              </Button>
-            )}
-            {project.repoUrl && (
-              <Button size="sm" variant="outline" className="border-slate-700 text-slate-400 text-xs"
-                onClick={() => window.open(project.repoUrl, '_blank')}>
-                <FileCode className="w-3 h-3 mr-1" /> Repo
-              </Button>
-            )}
-          </div>
-        </div>
-        {/* Build steps progress */}
-        <div className="px-4 py-2 border-t border-slate-800/50 flex items-center gap-1 overflow-x-auto">
-          {project.buildSteps.map((step, i) => {
-            const Icon = step.icon;
-            return (
-              <div key={step.id} className="flex items-center gap-1 shrink-0">
-                {i > 0 && <div className={`w-6 h-px ${step.status === 'done' ? 'bg-emerald-500' : 'bg-slate-700'}`} />}
-                <div className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs ${
-                  step.status === 'done' ? 'bg-emerald-500/20 text-emerald-400' :
-                  step.status === 'active' ? 'bg-yellow-500/20 text-yellow-400 animate-pulse' :
-                  step.status === 'error' ? 'bg-red-500/20 text-red-400' :
-                  'bg-slate-800/50 text-slate-500'
-                }`}>
-                  {step.status === 'done' ? <Check className="w-3 h-3" /> :
-                   step.status === 'active' ? <Loader2 className="w-3 h-3 animate-spin" /> :
-                   <Icon className="w-3 h-3" />}
-                  <span className="hidden md:inline">{step.label}</span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </header>
-
-      {/* Split screen: Left = Prompts, Right = Preview */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Panel - Prompts / Chat */}
-        <div className="w-1/2 border-r border-slate-800 flex flex-col">
-          {/* Chat messages */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            {project.chatHistory.map((msg, i) => (
-              <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
-                  msg.role === 'user'
-                    ? 'bg-emerald-600/30 text-white border border-emerald-700/50'
-                    : msg.role === 'system'
-                      ? 'bg-slate-800/50 text-slate-400 border border-slate-700/50 text-xs italic'
-                      : 'bg-slate-800/80 text-slate-200 border border-slate-700/50'
-                }`}>
-                  <div className="whitespace-pre-wrap">{msg.content}</div>
-                  <div className="text-xs text-slate-500 mt-1">
-                    {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </div>
-                </div>
-              </div>
-            ))}
-            {sending && (
-              <div className="flex justify-start">
-                <div className="bg-slate-800/80 rounded-lg px-3 py-2 border border-slate-700/50">
-                  <Loader2 className="w-4 h-4 animate-spin text-emerald-400" />
-                </div>
-              </div>
-            )}
-            <div ref={chatEndRef} />
-          </div>
-
-          {/* Prompt input */}
-          <div className="border-t border-slate-800 p-3">
-            <div className="flex gap-2">
-              <Input
-                value={promptInput}
-                onChange={e => setPromptInput(e.target.value)}
-                placeholder={project.status === 'idle' ? 'Type "start building" or add instructions...' : 'Send instructions or feedback...'}
-                className="bg-slate-800 border-slate-700 text-white placeholder:text-slate-500"
-                onKeyDown={e => e.key === 'Enter' && handleSendPrompt()}
-              />
-              <Button onClick={handleSendPrompt} disabled={!promptInput.trim() || sending} className="bg-emerald-600 hover:bg-emerald-700">
-                {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-              </Button>
-            </div>
-            {/* Quick actions */}
-            <div className="flex gap-2 mt-2 flex-wrap">
-              {project.status === 'idle' && (
+            <div className="flex items-center gap-3">
+              {activeSession && getStatusBadge(activeSession.status)}
+              {activeSession?.session_url && (
                 <Button size="sm" variant="outline" className="border-emerald-700 text-emerald-400 text-xs"
-                  onClick={() => { setPromptInput('start building'); }}>
-                  <Play className="w-3 h-3 mr-1" /> Start Building
+                  onClick={() => window.open(activeSession.session_url, '_blank')}>
+                  <ExternalLink className="w-3 h-3 mr-1" /> Devin Session
                 </Button>
               )}
-              {project.status === 'deployed' && (
-                <>
-                  <Button size="sm" variant="outline" className="border-slate-700 text-slate-400 text-xs"
-                    onClick={() => setPromptInput('Change the color scheme to ')}>
-                    <Palette className="w-3 h-3 mr-1" /> Restyle
-                  </Button>
-                  <Button size="sm" variant="outline" className="border-slate-700 text-slate-400 text-xs"
-                    onClick={() => setPromptInput('Add a new feature: ')}>
-                    <Code2 className="w-3 h-3 mr-1" /> Add Feature
-                  </Button>
-                  <Button size="sm" variant="outline" className="border-slate-700 text-slate-400 text-xs"
-                    onClick={() => setPromptInput('Fix this bug: ')}>
-                    <Settings2 className="w-3 h-3 mr-1" /> Fix Bug
-                  </Button>
-                </>
+              {activeSession?.pr_url && (
+                <Button size="sm" variant="outline" className="border-blue-700 text-blue-400 text-xs"
+                  onClick={() => window.open(activeSession.pr_url, '_blank')}>
+                  <GitPullRequest className="w-3 h-3 mr-1" /> PR
+                </Button>
               )}
             </div>
           </div>
-        </div>
+        </header>
 
-        {/* Right Panel - Preview / Terminal */}
-        <div className="w-1/2 flex flex-col">
-          <div className="border-b border-slate-800 px-3 py-1.5 flex items-center gap-2">
-            <button
-              onClick={() => setPreviewTab('preview')}
-              className={`flex items-center gap-1 px-3 py-1 rounded text-xs transition-colors ${
-                previewTab === 'preview' ? 'bg-emerald-600/20 text-emerald-400' : 'text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              <Eye className="w-3 h-3" /> Preview
-            </button>
-            <button
-              onClick={() => setPreviewTab('terminal')}
-              className={`flex items-center gap-1 px-3 py-1 rounded text-xs transition-colors ${
-                previewTab === 'terminal' ? 'bg-emerald-600/20 text-emerald-400' : 'text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              <Terminal className="w-3 h-3" /> Terminal
-            </button>
-            {project.previewUrl && previewTab === 'preview' && (
-              <Button size="sm" variant="ghost" className="ml-auto text-slate-500 text-xs"
-                onClick={() => {
-                  const iframe = document.getElementById('preview-iframe') as HTMLIFrameElement;
-                  if (iframe) iframe.src = project.previewUrl || '';
-                }}>
-                <RefreshCw className="w-3 h-3" />
-              </Button>
+        <div className="flex-1 flex overflow-hidden">
+          {/* Left Panel - Session Info */}
+          <div className="w-1/2 border-r border-slate-800 flex flex-col">
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {creating && (
+                <div className="flex items-center gap-3 p-4 bg-emerald-900/20 border border-emerald-700/30 rounded-lg">
+                  <Loader2 className="w-5 h-5 animate-spin text-emerald-400" />
+                  <div>
+                    <p className="text-sm text-white font-medium">Creating Devin session...</p>
+                    <p className="text-xs text-slate-400">Setting up autonomous build for {buildingIdeaName}</p>
+                  </div>
+                </div>
+              )}
+
+              {activeSession && !creating && (
+                <>
+                  <Card className="bg-slate-900/50 border-slate-800">
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-2 mb-3">
+                        {getStatusIcon(activeSession.status)}
+                        <h3 className="text-sm font-semibold text-white">Session Status</h3>
+                      </div>
+                      <div className="space-y-2 text-xs">
+                        <div className="flex justify-between">
+                          <span className="text-slate-400">Status</span>
+                          <span className="text-white capitalize">{activeSession.status}</span>
+                        </div>
+                        {activeSession.title && (
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Title</span>
+                            <span className="text-white">{activeSession.title}</span>
+                          </div>
+                        )}
+                        <div className="flex justify-between">
+                          <span className="text-slate-400">Session ID</span>
+                          <span className="text-slate-300 font-mono text-[10px]">{activeSession.devin_session_id}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-400">Started</span>
+                          <span className="text-white">{new Date(activeSession.created_at).toLocaleTimeString()}</span>
+                        </div>
+                        {activeSession.updated_at && (
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">Last Update</span>
+                            <span className="text-white">{new Date(activeSession.updated_at).toLocaleTimeString()}</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="mt-3 space-y-1.5">
+                        {activeSession.session_url && (
+                          <a href={activeSession.session_url} target="_blank" rel="noopener noreferrer"
+                            className="flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 transition-colors">
+                            <Eye className="w-3 h-3" /> Watch Devin build in real-time
+                          </a>
+                        )}
+                        {activeSession.pr_url && (
+                          <a href={activeSession.pr_url} target="_blank" rel="noopener noreferrer"
+                            className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors">
+                            <GitPullRequest className="w-3 h-3" /> View Pull Request
+                          </a>
+                        )}
+                        {activeSession.repo_url && (
+                          <a href={activeSession.repo_url} target="_blank" rel="noopener noreferrer"
+                            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-300 transition-colors">
+                            <FileCode className="w-3 h-3" /> GitHub Repository
+                          </a>
+                        )}
+                        {activeSession.frontend_url && (
+                          <a href={activeSession.frontend_url} target="_blank" rel="noopener noreferrer"
+                            className="flex items-center gap-1.5 text-xs text-green-400 hover:text-green-300 transition-colors">
+                            <Globe className="w-3 h-3" /> Live Frontend
+                          </a>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  {(activeSession.status === 'running' || activeSession.status === 'working') && (
+                    <div className="p-3 bg-yellow-900/20 border border-yellow-700/30 rounded-lg">
+                      <p className="text-xs text-yellow-400 font-medium">Devin is building your app autonomously</p>
+                      <p className="text-xs text-slate-400 mt-1">Click "Devin Session" to watch progress in real-time. You can also send instructions below.</p>
+                    </div>
+                  )}
+                  {activeSession.status === 'blocked' && (
+                    <div className="p-3 bg-orange-900/20 border border-orange-700/30 rounded-lg">
+                      <p className="text-xs text-orange-400 font-medium">Devin needs your input</p>
+                      <p className="text-xs text-slate-400 mt-1">Open the Devin session to see what's needed, or send a message below.</p>
+                    </div>
+                  )}
+                  {activeSession.status === 'finished' && (
+                    <div className="p-3 bg-green-900/20 border border-green-700/30 rounded-lg">
+                      <p className="text-xs text-green-400 font-medium">Build complete!</p>
+                      <p className="text-xs text-slate-400 mt-1">Your app has been built and deployed. Check the session for deployed URLs.</p>
+                    </div>
+                  )}
+                  {activeSession.status === 'error' && (
+                    <div className="p-3 bg-red-900/20 border border-red-700/30 rounded-lg">
+                      <p className="text-xs text-red-400 font-medium">Build encountered an error</p>
+                      <p className="text-xs text-slate-400 mt-1">Open the Devin session to see details.</p>
+                    </div>
+                  )}
+                  {pollInterval && (
+                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                      <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                      Auto-refreshing status every 10s
+                    </div>
+                  )}
+                </>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {activeSession && ['running', 'working', 'blocked'].includes(activeSession.status) && (
+              <div className="border-t border-slate-800 p-3">
+                <div className="flex gap-2">
+                  <Input
+                    value={messageInput}
+                    onChange={e => setMessageInput(e.target.value)}
+                    placeholder="Send instructions to Devin..."
+                    className="bg-slate-800 border-slate-700 text-white placeholder:text-slate-500"
+                    onKeyDown={e => e.key === 'Enter' && sendMessage()}
+                  />
+                  <Button onClick={sendMessage} disabled={!messageInput.trim() || sendingMessage} className="bg-emerald-600 hover:bg-emerald-700">
+                    {sendingMessage ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                  </Button>
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1">Messages are sent directly to the Devin session</p>
+              </div>
             )}
           </div>
 
-          <div className="flex-1 bg-slate-900">
-            {previewTab === 'preview' ? (
-              project.previewUrl ? (
+          {/* Right Panel - Devin Session Embed */}
+          <div className="w-1/2 flex flex-col">
+            <div className="border-b border-slate-800 px-3 py-1.5 flex items-center gap-2">
+              <div className="flex items-center gap-1 px-3 py-1 rounded text-xs bg-emerald-600/20 text-emerald-400">
+                <Eye className="w-3 h-3" /> Live Session
+              </div>
+              {activeSession?.session_url && (
+                <Button size="sm" variant="ghost" className="ml-auto text-slate-500 text-xs"
+                  onClick={() => window.open(activeSession.session_url, '_blank')}>
+                  <ExternalLink className="w-3 h-3 mr-1" /> Open Full View
+                </Button>
+              )}
+            </div>
+            <div className="flex-1 bg-slate-900">
+              {activeSession?.session_url ? (
                 <iframe
-                  id="preview-iframe"
-                  src={project.previewUrl}
+                  src={activeSession.session_url}
                   className="w-full h-full border-0"
-                  title="App Preview"
+                  title="Devin Session"
+                  allow="clipboard-read; clipboard-write"
                 />
               ) : (
                 <div className="flex items-center justify-center h-full text-slate-500">
                   <div className="text-center">
                     <Eye className="w-16 h-16 mx-auto mb-4 opacity-20" />
-                    <p className="text-lg">Live Preview</p>
+                    <p className="text-lg">Devin Session Preview</p>
                     <p className="text-sm mt-1">
-                      {project.status === 'building' ? 'Building... preview will appear when deployed' :
-                       project.status === 'idle' ? 'Start building to see live preview' :
-                       'Preview will appear here'}
+                      {creating ? 'Creating session...' : 'Session will appear here when active'}
                     </p>
                   </div>
                 </div>
-              )
-            ) : (
-              <div className="h-full overflow-y-auto p-4 font-mono text-xs">
-                {terminalLogs.map((log, i) => (
-                  <div key={i} className={`${
-                    log.startsWith('[OK]') ? 'text-emerald-400' :
-                    log.startsWith('[ERR]') ? 'text-red-400' :
-                    log.startsWith('$') ? 'text-yellow-400' :
-                    log.startsWith('===') ? 'text-emerald-300 font-bold' :
-                    'text-slate-400'
-                  }`}>
-                    {log || '\u00A0'}
-                  </div>
-                ))}
-                <div ref={terminalEndRef} />
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
       </div>
+    );
+  }
+
+  // ==================== IDEA SELECTION VIEW ====================
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-emerald-950 to-slate-950">
+      <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-sm">
+        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Button variant="ghost" size="sm" onClick={onBack} className="text-slate-400 hover:text-white">
+              <ArrowLeft className="w-4 h-4 mr-1" /> Back
+            </Button>
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center">
+                <Code2 className="w-5 h-5 text-white" />
+              </div>
+              <div>
+                <h1 className="text-lg font-bold text-white">Planter</h1>
+                <p className="text-xs text-emerald-400">Autonomous App Builder (Powered by Devin AI)</p>
+              </div>
+            </div>
+          </div>
+          <Button size="sm" variant="outline" className="border-slate-700 text-slate-400" onClick={loadHistory}>
+            <History className="w-4 h-4 mr-1" /> Build History
+          </Button>
+        </div>
+      </header>
+
+      <main className="max-w-4xl mx-auto px-4 py-8">
+        <div className="text-center mb-8">
+          <h2 className="text-2xl font-bold text-white mb-2">Build an App Autonomously</h2>
+          <p className="text-slate-400">Select a HELIXA idea or describe a new app. Devin AI will build it end-to-end.</p>
+        </div>
+
+        <Card className="bg-slate-900/50 border-slate-800 mb-6">
+          <CardContent className="p-4">
+            {!showCustom ? (
+              <Button variant="outline" className="w-full border-dashed border-emerald-700/50 text-emerald-400 hover:bg-emerald-900/20"
+                onClick={() => setShowCustom(true)}>
+                <MessageSquare className="w-4 h-4 mr-2" /> Build from custom description
+              </Button>
+            ) : (
+              <div className="space-y-3">
+                <Input value={customName} onChange={e => setCustomName(e.target.value)}
+                  placeholder="App name (e.g., Task Tracker Pro)"
+                  className="bg-slate-800 border-slate-700 text-white" />
+                <Input value={customDescription} onChange={e => setCustomDescription(e.target.value)}
+                  placeholder="Describe what the app should do..."
+                  className="bg-slate-800 border-slate-700 text-white" />
+                <div className="flex gap-2">
+                  <Button onClick={startCustomBuild} disabled={!customName.trim() || creating} className="bg-emerald-600 hover:bg-emerald-700">
+                    {creating ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Rocket className="w-4 h-4 mr-1" />}
+                    Start Building
+                  </Button>
+                  <Button variant="ghost" onClick={() => setShowCustom(false)} className="text-slate-400">Cancel</Button>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {ideas.length === 0 ? (
+          <Card className="bg-slate-900/50 border-slate-800">
+            <CardContent className="p-12 text-center">
+              <Brain className="w-16 h-16 text-slate-600 mx-auto mb-4" />
+              <h3 className="text-xl font-semibold text-white mb-2">No ideas yet</h3>
+              <p className="text-slate-400 mb-4">Go to HELIXA first to capture and score your app ideas, or use custom build above</p>
+              <Button onClick={onBack} className="bg-indigo-600 hover:bg-indigo-700">
+                <ArrowLeft className="w-4 h-4 mr-1" /> Back to Dashboard
+              </Button>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="grid md:grid-cols-2 gap-4">
+            {ideas.map(idea => (
+              <Card key={idea.id}
+                className="bg-slate-900/50 border-slate-800 hover:border-emerald-600/50 cursor-pointer transition-all"
+                onClick={async () => { const full = await api.helixa.ideas.get(idea.id); startBuild(full); }}>
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="font-semibold text-white truncate flex-1">{idea.idea_name}</h3>
+                    <span className={`text-xl font-bold ml-2 ${scoreColor(idea.overall_score)}`}>{idea.overall_score}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge className="bg-emerald-500/20 text-emerald-400 text-xs">{idea.product_type}</Badge>
+                    <span className="text-xs text-slate-500">{new Date(idea.created_at).toLocaleDateString()}</span>
+                  </div>
+                  <div className="mt-3 flex items-center gap-1 text-xs text-emerald-400">
+                    <Play className="w-3 h-3" /> Click to build with Devin AI
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </main>
     </div>
   );
 }
