@@ -110,7 +110,7 @@ export default function ProjectFlow({ projectId, onBack }: Props) {
       } catch { /* no campaign content yet */ }
 
       // Determine step
-      if (p.status === 'pipeline_running' || p.status === 'submitted' || p.status === 'live') {
+      if (p.status === 'pipeline_running' || p.status === 'pipeline_done' || p.status === 'submitted' || p.status === 'live') {
         setStep('pipeline');
       } else if (p.listing_generated) {
         setStep('review');
