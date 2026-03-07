@@ -248,6 +248,7 @@ async def init_db():
         -- DevBrain Tables
         CREATE TABLE IF NOT EXISTS devbrain_profile (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
             preferred_tech_stack TEXT DEFAULT '[]',
             coding_conventions TEXT DEFAULT '[]',
             architectural_preferences TEXT DEFAULT '[]',
@@ -257,11 +258,14 @@ async def init_db():
             work_patterns TEXT DEFAULT '[]',
             key_principles TEXT DEFAULT '[]',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
         );
 
         CREATE TABLE IF NOT EXISTS devbrain_apps (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
             name TEXT NOT NULL,
             description TEXT DEFAULT '',
             status TEXT DEFAULT 'idea',
@@ -271,30 +275,38 @@ async def init_db():
             session_count INTEGER DEFAULT 0,
             priority TEXT DEFAULT 'low',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(name)
+            UNIQUE(user_id, name),
+            FOREIGN KEY (user_id) REFERENCES users(id)
         );
 
         CREATE TABLE IF NOT EXISTS devbrain_decisions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
             date TEXT DEFAULT '',
             session_id TEXT DEFAULT '',
             project TEXT DEFAULT '',
             decision TEXT DEFAULT '',
             context TEXT DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, date, session_id, project, decision),
+            FOREIGN KEY (user_id) REFERENCES users(id)
         );
 
         CREATE TABLE IF NOT EXISTS devbrain_corrections (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
             date TEXT DEFAULT '',
             session_id TEXT DEFAULT '',
             project TEXT DEFAULT '',
             correction TEXT DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, date, session_id, project, correction),
+            FOREIGN KEY (user_id) REFERENCES users(id)
         );
 
         CREATE TABLE IF NOT EXISTS devbrain_sessions_metadata (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
             devin_session_id TEXT NOT NULL,
             date TEXT DEFAULT '',
             title TEXT DEFAULT '',
@@ -309,11 +321,13 @@ async def init_db():
             app_requirements TEXT DEFAULT '[]',
             patterns TEXT DEFAULT '[]',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(devin_session_id)
+            UNIQUE(user_id, devin_session_id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
         );
 
         CREATE TABLE IF NOT EXISTS devbrain_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
             devin_session_id TEXT NOT NULL,
             app_name TEXT DEFAULT '',
             original_prompt TEXT DEFAULT '',
@@ -323,7 +337,8 @@ async def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_checked_at TIMESTAMP,
-            UNIQUE(devin_session_id)
+            UNIQUE(user_id, devin_session_id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
         );
 
         CREATE TABLE IF NOT EXISTS devbrain_actions (

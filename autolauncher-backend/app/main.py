@@ -1996,10 +1996,14 @@ def _get_devin_api_key() -> str:
 def _get_session_manager() -> DevBrainSessionManager:
     """Get or create the global session manager."""
     global _devbrain_manager
+    api_key = _get_devin_api_key()
     if _devbrain_manager is None:
-        api_key = _get_devin_api_key()
         client = DevinAPIClient(api_key)
         _devbrain_manager = DevBrainSessionManager(client)
+    else:
+        # Update API key in case it changed
+        _devbrain_manager.devin_client.api_key = api_key
+        _devbrain_manager.devin_client.headers = {"Authorization": f"Bearer {api_key}"}
     return _devbrain_manager
 
 
@@ -2010,18 +2014,20 @@ async def devbrain_import_metadata(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Import extracted session metadata into DevBrain."""
+    user_id = int(current_user["sub"])
     now = datetime.now(timezone.utc).isoformat()
 
-    # Import user profile (upsert — delete old, insert new)
+    # Import user profile (upsert — delete old for this user, insert new)
     profile = data.user_profile
-    await db.execute("DELETE FROM devbrain_profile")
+    await db.execute("DELETE FROM devbrain_profile WHERE user_id = ?", (user_id,))
     await db.execute(
         """INSERT INTO devbrain_profile
-           (preferred_tech_stack, coding_conventions, architectural_preferences,
+           (user_id, preferred_tech_stack, coding_conventions, architectural_preferences,
             communication_style, frustrations, what_works_well, work_patterns,
             key_principles, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
+            user_id,
             json.dumps(profile.get("preferred_tech_stack", [])),
             json.dumps(profile.get("coding_conventions", [])),
             json.dumps(profile.get("architectural_preferences", [])),
@@ -2042,15 +2048,16 @@ async def devbrain_import_metadata(
             continue
         await db.execute(
             """INSERT INTO devbrain_apps
-               (name, description, status, tech_stack, requirements,
+               (user_id, name, description, status, tech_stack, requirements,
                 related_sessions, session_count, priority, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(name) DO UPDATE SET
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, name) DO UPDATE SET
                description=excluded.description, status=excluded.status,
                tech_stack=excluded.tech_stack, requirements=excluded.requirements,
                related_sessions=excluded.related_sessions, session_count=excluded.session_count,
                priority=excluded.priority""",
             (
+                user_id,
                 name,
                 app_data.get("description", ""),
                 app_data.get("status", "idea"),
@@ -2064,14 +2071,16 @@ async def devbrain_import_metadata(
         )
         apps_imported += 1
 
-    # Import decisions log
+    # Import decisions log (dedup via UNIQUE constraint)
     decisions_imported = 0
     for decision in data.decisions_log:
         await db.execute(
             """INSERT INTO devbrain_decisions
-               (date, session_id, project, decision, context, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               (user_id, date, session_id, project, decision, context, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, date, session_id, project, decision) DO NOTHING""",
             (
+                user_id,
                 decision.get("date", ""),
                 decision.get("session_id", ""),
                 decision.get("project", ""),
@@ -2082,14 +2091,16 @@ async def devbrain_import_metadata(
         )
         decisions_imported += 1
 
-    # Import corrections log
+    # Import corrections log (dedup via UNIQUE constraint)
     corrections_imported = 0
     for correction in data.corrections_log:
         await db.execute(
             """INSERT INTO devbrain_corrections
-               (date, session_id, project, correction, created_at)
-               VALUES (?, ?, ?, ?, ?)""",
+               (user_id, date, session_id, project, correction, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, date, session_id, project, correction) DO NOTHING""",
             (
+                user_id,
                 correction.get("date", ""),
                 correction.get("session_id", ""),
                 correction.get("project", ""),
@@ -2107,15 +2118,16 @@ async def devbrain_import_metadata(
             continue
         await db.execute(
             """INSERT INTO devbrain_sessions_metadata
-               (devin_session_id, date, title, project, goals, decisions,
+               (user_id, devin_session_id, date, title, project, goals, decisions,
                 corrections, preferences, outcome, outcome_detail,
                 tech_stack, app_requirements, patterns, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(devin_session_id) DO UPDATE SET
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, devin_session_id) DO UPDATE SET
                title=excluded.title, project=excluded.project,
                goals=excluded.goals, decisions=excluded.decisions,
                outcome=excluded.outcome""",
             (
+                user_id,
                 sid,
                 session.get("date", ""),
                 session.get("title", ""),
@@ -2151,7 +2163,8 @@ async def devbrain_get_profile(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Get the DevBrain user profile."""
-    cursor = await db.execute("SELECT * FROM devbrain_profile ORDER BY id DESC LIMIT 1")
+    user_id = int(current_user["sub"])
+    cursor = await db.execute("SELECT * FROM devbrain_profile WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
     row = await cursor.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="No profile imported yet. Use POST /api/devbrain/import first.")
@@ -2164,7 +2177,8 @@ async def devbrain_get_apps(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Get all apps from the DevBrain catalog."""
-    cursor = await db.execute("SELECT * FROM devbrain_apps ORDER BY session_count DESC, name")
+    user_id = int(current_user["sub"])
+    cursor = await db.execute("SELECT * FROM devbrain_apps WHERE user_id = ? ORDER BY session_count DESC, name", (user_id,))
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
 
@@ -2176,12 +2190,13 @@ async def devbrain_get_decisions(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Get decisions log, optionally filtered by project."""
+    user_id = int(current_user["sub"])
     if project:
         cursor = await db.execute(
-            "SELECT * FROM devbrain_decisions WHERE project = ? ORDER BY date DESC", (project,)
+            "SELECT * FROM devbrain_decisions WHERE user_id = ? AND project = ? ORDER BY date DESC", (user_id, project)
         )
     else:
-        cursor = await db.execute("SELECT * FROM devbrain_decisions ORDER BY date DESC")
+        cursor = await db.execute("SELECT * FROM devbrain_decisions WHERE user_id = ? ORDER BY date DESC", (user_id,))
     return [dict(row) for row in await cursor.fetchall()]
 
 
@@ -2192,12 +2207,13 @@ async def devbrain_get_corrections(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Get corrections log, optionally filtered by project."""
+    user_id = int(current_user["sub"])
     if project:
         cursor = await db.execute(
-            "SELECT * FROM devbrain_corrections WHERE project = ? ORDER BY date DESC", (project,)
+            "SELECT * FROM devbrain_corrections WHERE user_id = ? AND project = ? ORDER BY date DESC", (user_id, project)
         )
     else:
-        cursor = await db.execute("SELECT * FROM devbrain_corrections ORDER BY date DESC")
+        cursor = await db.execute("SELECT * FROM devbrain_corrections WHERE user_id = ? ORDER BY date DESC", (user_id,))
     return [dict(row) for row in await cursor.fetchall()]
 
 
@@ -2207,7 +2223,8 @@ async def devbrain_get_sessions_metadata(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Get all imported session metadata."""
-    cursor = await db.execute("SELECT * FROM devbrain_sessions_metadata ORDER BY date DESC")
+    user_id = int(current_user["sub"])
+    cursor = await db.execute("SELECT * FROM devbrain_sessions_metadata WHERE user_id = ? ORDER BY date DESC", (user_id,))
     return [dict(row) for row in await cursor.fetchall()]
 
 
@@ -2222,12 +2239,14 @@ async def devbrain_create_session(
     if not api_key:
         raise HTTPException(status_code=400, detail="DEVIN_API_KEY not configured. Set it as environment variable.")
 
+    user_id = int(current_user["sub"])
+
     # Load profile and apps for the agent
-    profile_cursor = await db.execute("SELECT * FROM devbrain_profile ORDER BY id DESC LIMIT 1")
+    profile_cursor = await db.execute("SELECT * FROM devbrain_profile WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
     profile_row = await profile_cursor.fetchone()
     profile = dict(profile_row) if profile_row else {}
 
-    apps_cursor = await db.execute("SELECT * FROM devbrain_apps")
+    apps_cursor = await db.execute("SELECT * FROM devbrain_apps WHERE user_id = ?", (user_id,))
     apps = [dict(row) for row in await apps_cursor.fetchall()]
 
     # Load decisions and corrections for this project
@@ -2235,12 +2254,12 @@ async def devbrain_create_session(
     corrections = []
     if req.app_name:
         dec_cursor = await db.execute(
-            "SELECT * FROM devbrain_decisions WHERE project = ? ORDER BY date", (req.app_name,)
+            "SELECT * FROM devbrain_decisions WHERE user_id = ? AND project = ? ORDER BY date", (user_id, req.app_name)
         )
         decisions = [dict(row) for row in await dec_cursor.fetchall()]
 
         cor_cursor = await db.execute(
-            "SELECT * FROM devbrain_corrections WHERE project = ? ORDER BY date", (req.app_name,)
+            "SELECT * FROM devbrain_corrections WHERE user_id = ? AND project = ? ORDER BY date", (user_id, req.app_name)
         )
         corrections = [dict(row) for row in await cor_cursor.fetchall()]
 
@@ -2269,10 +2288,11 @@ async def devbrain_create_session(
     # Store in DB
     cursor = await db.execute(
         """INSERT INTO devbrain_sessions
-           (devin_session_id, app_name, original_prompt, enriched_prompt,
+           (user_id, devin_session_id, app_name, original_prompt, enriched_prompt,
             status, auto_monitor, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'running', ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)""",
         (
+            user_id,
             devin_session_id,
             req.app_name or "",
             req.prompt,
@@ -2311,12 +2331,13 @@ async def devbrain_list_sessions(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """List all DevBrain-managed Devin sessions."""
+    user_id = int(current_user["sub"])
     if status:
         cursor = await db.execute(
-            "SELECT * FROM devbrain_sessions WHERE status = ? ORDER BY created_at DESC", (status,)
+            "SELECT * FROM devbrain_sessions WHERE user_id = ? AND status = ? ORDER BY created_at DESC", (user_id, status)
         )
     else:
-        cursor = await db.execute("SELECT * FROM devbrain_sessions ORDER BY created_at DESC")
+        cursor = await db.execute("SELECT * FROM devbrain_sessions WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
     sessions = [dict(row) for row in await cursor.fetchall()]
     return sessions
 
@@ -2328,7 +2349,8 @@ async def devbrain_get_session(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Get a DevBrain session with its agent actions and current Devin status."""
-    cursor = await db.execute("SELECT * FROM devbrain_sessions WHERE id = ?", (session_id,))
+    user_id = int(current_user["sub"])
+    cursor = await db.execute("SELECT * FROM devbrain_sessions WHERE id = ? AND user_id = ?", (session_id, user_id))
     row = await cursor.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -2367,7 +2389,8 @@ async def devbrain_review_session(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Have the DevBrain agent review a session and take action if needed."""
-    cursor = await db.execute("SELECT * FROM devbrain_sessions WHERE id = ?", (session_id,))
+    user_id = int(current_user["sub"])
+    cursor = await db.execute("SELECT * FROM devbrain_sessions WHERE id = ? AND user_id = ?", (session_id, user_id))
     row = await cursor.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -2384,7 +2407,7 @@ async def devbrain_review_session(
     messages = session_data.get("messages", [])
 
     # Load profile
-    profile_cursor = await db.execute("SELECT * FROM devbrain_profile ORDER BY id DESC LIMIT 1")
+    profile_cursor = await db.execute("SELECT * FROM devbrain_profile WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
     profile_row = await profile_cursor.fetchone()
     profile = dict(profile_row) if profile_row else {}
 
@@ -2406,7 +2429,7 @@ async def devbrain_review_session(
     if review.get("needs_comment") and review.get("comment"):
         comment = review["comment"]
         sent = await manager.send_comment(devin_session_id, comment)
-        action_type = "correction" if review["review_result"] == "needs_correction" else "comment"
+        action_type = "correction" if review.get("review_result") == "needs_correction" else "comment"
         await db.execute(
             "INSERT INTO devbrain_actions (session_id, action_type, content, devin_response, created_at) VALUES (?, ?, ?, ?, ?)",
             (session_id, action_type, comment, "sent" if sent else "failed", now),
@@ -2481,14 +2504,18 @@ async def devbrain_monitor_status(
     """Get the current status of the DevBrain monitor."""
     manager = _get_session_manager()
 
+    user_id = int(current_user["sub"])
+
     # Count active sessions
     cursor = await db.execute(
-        "SELECT COUNT(*) as cnt FROM devbrain_sessions WHERE status IN ('running', 'created')"
+        "SELECT COUNT(*) as cnt FROM devbrain_sessions WHERE user_id = ? AND status IN ('running', 'created')", (user_id,)
     )
     active = (await cursor.fetchone())["cnt"]
 
-    # Count total actions
-    cursor = await db.execute("SELECT COUNT(*) as cnt FROM devbrain_actions")
+    # Count total actions for this user's sessions
+    cursor = await db.execute(
+        "SELECT COUNT(*) as cnt FROM devbrain_actions WHERE session_id IN (SELECT id FROM devbrain_sessions WHERE user_id = ?)", (user_id,)
+    )
     total_actions = (await cursor.fetchone())["cnt"]
 
     return MonitorStatusResponse(
@@ -2506,30 +2533,32 @@ async def devbrain_get_context(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """Get the full DevBrain context for a specific app — useful for previewing what enrichment would look like."""
+    user_id = int(current_user["sub"])
+
     # Get app info
-    cursor = await db.execute("SELECT * FROM devbrain_apps WHERE name = ?", (app_name,))
+    cursor = await db.execute("SELECT * FROM devbrain_apps WHERE user_id = ? AND name = ?", (user_id, app_name))
     app_row = await cursor.fetchone()
 
     # Get decisions
     dec_cursor = await db.execute(
-        "SELECT * FROM devbrain_decisions WHERE project = ? ORDER BY date", (app_name,)
+        "SELECT * FROM devbrain_decisions WHERE user_id = ? AND project = ? ORDER BY date", (user_id, app_name)
     )
     decisions = [dict(row) for row in await dec_cursor.fetchall()]
 
     # Get corrections
     cor_cursor = await db.execute(
-        "SELECT * FROM devbrain_corrections WHERE project = ? ORDER BY date", (app_name,)
+        "SELECT * FROM devbrain_corrections WHERE user_id = ? AND project = ? ORDER BY date", (user_id, app_name)
     )
     corrections = [dict(row) for row in await cor_cursor.fetchall()]
 
     # Get related sessions
     ses_cursor = await db.execute(
-        "SELECT * FROM devbrain_sessions_metadata WHERE project = ? ORDER BY date", (app_name,)
+        "SELECT * FROM devbrain_sessions_metadata WHERE user_id = ? AND project = ? ORDER BY date", (user_id, app_name)
     )
     sessions = [dict(row) for row in await ses_cursor.fetchall()]
 
     # Get profile
-    profile_cursor = await db.execute("SELECT * FROM devbrain_profile ORDER BY id DESC LIMIT 1")
+    profile_cursor = await db.execute("SELECT * FROM devbrain_profile WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
     profile_row = await profile_cursor.fetchone()
 
     return {
