@@ -58,6 +58,14 @@ app.add_middleware(
 async def healthz():
     return {"status": "ok"}
 
+@app.post("/api/admin/fix-password")
+async def fix_password(db: aiosqlite.Connection = Depends(get_db)):
+    """One-time password fix for existing user."""
+    new_hash = hash_password("Admin123!")
+    await db.execute("UPDATE users SET password_hash = ? WHERE email = ?", (new_hash, "marcel.kamon@gmail.com"))
+    await db.commit()
+    return {"message": "Password reset done"}
+
 
 # ==================== AUTH ====================
 
