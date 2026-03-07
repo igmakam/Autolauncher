@@ -8,8 +8,9 @@ import { Rocket, Settings, Plus, LogOut, BarChart3, Zap, Globe, Shield, Brain } 
 import SetupWizard from './SetupWizard';
 import ProjectFlow from './ProjectFlow';
 import HelixaModule from './HelixaModule';
+import DevBrainModule from './DevBrainModule';
 
-type View = 'dashboard' | 'setup' | 'project' | 'helixa';
+type View = 'dashboard' | 'setup' | 'project' | 'helixa' | 'devbrain';
 
 export default function Dashboard() {
   const { user, logout } = useAuth();
@@ -73,6 +74,10 @@ export default function Dashboard() {
 
   if (view === 'helixa') {
     return <HelixaModule onBack={() => { setView('dashboard'); loadData(); }} />;
+  }
+
+  if (view === 'devbrain') {
+    return <DevBrainModule onBack={() => { setView('dashboard'); loadData(); }} />;
   }
 
   if (loading) {
@@ -150,25 +155,48 @@ export default function Dashboard() {
           </Card>
         </div>
 
-        {/* HELIXA Module */}
-        <Card className="bg-indigo-900/20 border-indigo-800/30 mb-8 cursor-pointer hover:border-indigo-600 transition-colors" onClick={() => setView('helixa')}>
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-indigo-500/20 rounded-lg">
-                  <Brain className="w-6 h-6 text-indigo-400" />
+        {/* Module Cards */}
+        <div className="grid md:grid-cols-2 gap-4 mb-8">
+          {/* HELIXA Module */}
+          <Card className="bg-indigo-900/20 border-indigo-800/30 cursor-pointer hover:border-indigo-600 transition-colors" onClick={() => setView('helixa')}>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-indigo-500/20 rounded-lg">
+                    <Brain className="w-6 h-6 text-indigo-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-white font-semibold">HELIXA</h3>
+                    <p className="text-xs text-indigo-400">Idea Capture & Scoring</p>
+                  </div>
                 </div>
-                <div>
-                  <h3 className="text-white font-semibold">HELIXA</h3>
-                  <p className="text-xs text-indigo-400">Voice-First Idea Capture & Scoring System</p>
-                </div>
+                <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700">
+                  <Brain className="w-4 h-4 mr-1" /> Open
+                </Button>
               </div>
-              <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700">
-                <Brain className="w-4 h-4 mr-1" /> Open HELIXA
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+
+          {/* DevBrain Module */}
+          <Card className="bg-emerald-900/20 border-emerald-800/30 cursor-pointer hover:border-emerald-600 transition-colors" onClick={() => setView('devbrain')}>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-emerald-500/20 rounded-lg">
+                    <Zap className="w-6 h-6 text-emerald-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-white font-semibold">DevBrain</h3>
+                    <p className="text-xs text-emerald-400">AI Agent Memory & Session Manager</p>
+                  </div>
+                </div>
+                <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700">
+                  <Zap className="w-4 h-4 mr-1" /> Open
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
 
         {/* Setup Status */}
         <Card className="bg-slate-900/50 border-slate-800 mb-8">

@@ -312,6 +312,123 @@ export interface HelixaExperimentalStats {
   success_rate: number;
 }
 
+// ==================== DEVBRAIN TYPES ====================
+
+export interface DevBrainProfile {
+  id: number;
+  user_id: number;
+  preferred_tech_stack: string;
+  coding_conventions: string;
+  architectural_preferences: string;
+  communication_style: string;
+  frustrations: string;
+  what_works_well: string;
+  work_patterns: string;
+  key_principles: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DevBrainApp {
+  id: number;
+  user_id: number;
+  name: string;
+  description: string;
+  status: string;
+  tech_stack: string;
+  requirements: string;
+  related_sessions: string;
+  session_count: number;
+  priority: string;
+  created_at: string;
+}
+
+export interface DevBrainDecision {
+  id: number;
+  user_id: number;
+  date: string;
+  session_id: string;
+  project: string;
+  decision: string;
+  context: string;
+  created_at: string;
+}
+
+export interface DevBrainCorrection {
+  id: number;
+  user_id: number;
+  date: string;
+  session_id: string;
+  project: string;
+  correction: string;
+  created_at: string;
+}
+
+export interface DevBrainSessionMeta {
+  id: number;
+  user_id: number;
+  devin_session_id: string;
+  date: string;
+  title: string;
+  project: string;
+  goals: string;
+  decisions: string;
+  corrections: string;
+  preferences: string;
+  outcome: string;
+  outcome_detail: string;
+  tech_stack: string;
+  app_requirements: string;
+  patterns: string;
+  created_at: string;
+}
+
+export interface DevBrainSession {
+  id: number;
+  user_id: number;
+  devin_session_id: string;
+  app_name: string;
+  original_prompt: string;
+  enriched_prompt: string;
+  status: string;
+  auto_monitor: number;
+  created_at: string;
+  updated_at: string;
+  last_checked_at: string | null;
+}
+
+export interface DevBrainAction {
+  id: number;
+  session_id: number;
+  action_type: string;
+  content: string;
+  devin_response: string;
+  created_at: string;
+}
+
+export interface DevBrainMonitorStatus {
+  is_running: boolean;
+  active_sessions: number;
+  total_actions_taken: number;
+  last_check_at: string | null;
+}
+
+export interface DevBrainContext {
+  app: DevBrainApp | null;
+  decisions: DevBrainDecision[];
+  corrections: DevBrainCorrection[];
+  sessions: DevBrainSessionMeta[];
+  profile: DevBrainProfile | null;
+}
+
+export interface DevBrainImportResponse {
+  message: string;
+  apps_imported: number;
+  decisions_imported: number;
+  corrections_imported: number;
+  sessions_imported: number;
+}
+
 // ==================== API ====================
 
 export const api = {
@@ -394,6 +511,26 @@ export const api = {
       request<{ message: string; ai_suggestion: { diagnosis: string; solution: string[]; alternative: string; helpful_link: string; helpful_link_label: string } | null }>('/api/setup-feedback', { method: 'POST', body: { credential_type, message, screenshot_base64 } }),
     list: () =>
       request<Array<{ id: number; credential_type: string; message: string; screenshot_base64: string; status: string; created_at: string }>>('/api/setup-feedback'),
+  },
+  devbrain: {
+    profile: () => request<DevBrainProfile>('/api/devbrain/profile'),
+    apps: () => request<DevBrainApp[]>('/api/devbrain/apps'),
+    decisions: (project?: string) =>
+      request<DevBrainDecision[]>(project ? `/api/devbrain/decisions?project=${encodeURIComponent(project)}` : '/api/devbrain/decisions'),
+    corrections: (project?: string) =>
+      request<DevBrainCorrection[]>(project ? `/api/devbrain/corrections?project=${encodeURIComponent(project)}` : '/api/devbrain/corrections'),
+    sessionsMeta: () => request<DevBrainSessionMeta[]>('/api/devbrain/sessions-metadata'),
+    sessions: (status?: string) =>
+      request<DevBrainSession[]>(status ? `/api/devbrain/sessions?status=${status}` : '/api/devbrain/sessions'),
+    sessionDetail: (id: number) => request<{ session: DevBrainSession; actions: DevBrainAction[]; devin_status: Record<string, unknown> | null }>(`/api/devbrain/sessions/${id}`),
+    context: (appName: string) => request<DevBrainContext>(`/api/devbrain/context/${encodeURIComponent(appName)}`),
+    monitorStatus: () => request<DevBrainMonitorStatus>('/api/devbrain/monitor/status'),
+    monitorStart: () => request<{ message: string }>('/api/devbrain/monitor/start', { method: 'POST' }),
+    monitorStop: () => request<{ message: string }>('/api/devbrain/monitor/stop', { method: 'POST' }),
+    createSession: (data: { app_name?: string; prompt: string; auto_monitor?: boolean }) =>
+      request<DevBrainSession>('/api/devbrain/sessions', { method: 'POST', body: data }),
+    importMetadata: (data: { user_profile: Record<string, unknown>; apps_catalog: Record<string, unknown>[]; decisions_log: Record<string, unknown>[]; corrections_log: Record<string, unknown>[]; sessions_metadata: Record<string, unknown>[] }) =>
+      request<DevBrainImportResponse>('/api/devbrain/import', { method: 'POST', body: data }),
   },
   helixa: {
     ideas: {
