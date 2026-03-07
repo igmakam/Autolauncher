@@ -187,64 +187,68 @@ class DevBrainSessionManager:
         from app.devbrain_agent import DevBrainAgent
         from app.ai_engine import get_openai_client
 
-        while self._monitor_running:
-            try:
-                self._last_check_at = datetime.now(timezone.utc).isoformat()
-                logger.info("DevBrain monitor: checking active sessions...")
+        try:
+            while self._monitor_running:
+                try:
+                    self._last_check_at = datetime.now(timezone.utc).isoformat()
+                    logger.info("DevBrain monitor: checking active sessions...")
 
-                # Query active sessions with a short-lived DB connection
-                active_sessions = []
-                async with aiosqlite.connect(db_path) as db:
-                    db.row_factory = aiosqlite.Row
-                    cursor = await db.execute(
-                        "SELECT * FROM devbrain_sessions WHERE status IN ('running', 'created') AND auto_monitor = 1"
-                    )
-                    active_sessions = [dict(row) for row in await cursor.fetchall()]
-
-                if not active_sessions:
-                    logger.info("DevBrain monitor: no active sessions to check")
-                    await asyncio.sleep(check_interval)
-                    continue
-
-                # Process active sessions in a separate DB connection
-                openai_client = await get_openai_client()
-
-                async with aiosqlite.connect(db_path) as db:
-                    db.row_factory = aiosqlite.Row
-
-                    # Group sessions by user_id and load correct profile per user
-                    sessions_by_user: dict[int, list[dict]] = {}
-                    for session in active_sessions:
-                        uid = session.get("user_id", 0)
-                        sessions_by_user.setdefault(uid, []).append(session)
-
-                    for user_id, user_sessions in sessions_by_user.items():
-                        # Load profile for this specific user
-                        profile_cursor = await db.execute(
-                            "SELECT * FROM devbrain_profile WHERE user_id = ? ORDER BY id DESC LIMIT 1",
-                            (user_id,),
+                    # Query active sessions with a short-lived DB connection
+                    active_sessions = []
+                    async with aiosqlite.connect(db_path) as db:
+                        db.row_factory = aiosqlite.Row
+                        cursor = await db.execute(
+                            "SELECT * FROM devbrain_sessions WHERE status IN ('running', 'created') AND auto_monitor = 1"
                         )
-                        profile_row = await profile_cursor.fetchone()
-                        profile = dict(profile_row) if profile_row else {}
+                        active_sessions = [dict(row) for row in await cursor.fetchall()]
 
-                        agent = DevBrainAgent(openai_client)
-                        agent.set_profile(profile)
+                    if not active_sessions:
+                        logger.info("DevBrain monitor: no active sessions to check")
+                        await asyncio.sleep(check_interval)
+                        continue
 
-                        for session in user_sessions:
-                            try:
-                                await self._check_single_session(db, agent, session)
-                            except Exception as e:
-                                logger.error(f"Monitor error for session {session.get('devin_session_id')}: {e}")
+                    # Process active sessions in a separate DB connection
+                    openai_client = await get_openai_client()
 
-                    await db.commit()
+                    async with aiosqlite.connect(db_path) as db:
+                        db.row_factory = aiosqlite.Row
 
-            except asyncio.CancelledError:
-                logger.info("DevBrain monitor cancelled")
-                break
-            except Exception as e:
-                logger.error(f"DevBrain monitor error: {e}")
+                        # Group sessions by user_id and load correct profile per user
+                        sessions_by_user: dict[int, list[dict]] = {}
+                        for session in active_sessions:
+                            uid = session.get("user_id", 0)
+                            sessions_by_user.setdefault(uid, []).append(session)
 
-            await asyncio.sleep(check_interval)
+                        for user_id, user_sessions in sessions_by_user.items():
+                            # Load profile for this specific user
+                            profile_cursor = await db.execute(
+                                "SELECT * FROM devbrain_profile WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                                (user_id,),
+                            )
+                            profile_row = await profile_cursor.fetchone()
+                            profile = dict(profile_row) if profile_row else {}
+
+                            agent = DevBrainAgent(openai_client)
+                            agent.set_profile(profile)
+
+                            for session in user_sessions:
+                                try:
+                                    await self._check_single_session(db, agent, session)
+                                except Exception as e:
+                                    logger.error(f"Monitor error for session {session.get('devin_session_id')}: {e}")
+
+                        await db.commit()
+
+                except asyncio.CancelledError:
+                    logger.info("DevBrain monitor cancelled")
+                    break
+                except Exception as e:
+                    logger.error(f"DevBrain monitor error: {e}")
+
+                await asyncio.sleep(check_interval)
+        finally:
+            self._monitor_running = False
+            logger.info("DevBrain monitor loop exited")
 
     async def _check_single_session(self, db, agent, session: dict) -> None:
         """Check a single session and take action if needed."""
@@ -287,7 +291,7 @@ class DevBrainSessionManager:
             if review.get("needs_comment") and review.get("comment"):
                 comment = review["comment"]
                 sent = await self.send_comment(devin_session_id, comment)
-                action_type = "correction" if review_result == "needs_correction" else "nudge"
+                action_type = "correction" if review_result == "needs_correction" else "comment"
                 await db.execute(
                     "INSERT INTO devbrain_actions (session_id, action_type, content, devin_response, created_at) VALUES (?, ?, ?, ?, ?)",
                     (session["id"], action_type, comment, "sent" if sent else "failed", now),
@@ -306,7 +310,8 @@ class DevBrainSessionManager:
                 )
                 logger.info(f"Agent nudged stalled session {devin_session_id}")
 
-            elif review_result == "completed":
+            # Independent check: mark session completed regardless of whether comment was sent
+            if review_result == "completed":
                 await db.execute(
                     "UPDATE devbrain_sessions SET status = 'completed', updated_at = ? WHERE id = ?",
                     (now, session["id"]),
