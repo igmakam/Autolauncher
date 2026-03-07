@@ -13,6 +13,7 @@ import {
 
 interface Props {
   onBack: () => void;
+  onBuildApp?: (ideaId: number) => void;
 }
 
 // ============ VOICE RECORDER ============
@@ -677,7 +678,7 @@ function ExperimentalPanel({ items, stats, onGenerate, onFeedback, onDelete, gen
 
 // ============ MAIN MODULE ============
 
-export default function HelixaModule({ onBack }: Props) {
+export default function HelixaModule({ onBack, onBuildApp }: Props) {
   const [mainTab, setMainTab] = useState('ideas');
   const [ideas, setIdeas] = useState<HelixaIdeaSummary[]>([]);
   const [selectedIdea, setSelectedIdea] = useState<HelixaIdea | null>(null);
@@ -762,13 +763,9 @@ export default function HelixaModule({ onBack }: Props) {
     await loadIdeas();
   };
 
-  const createAppFromIdea = async (id: number) => {
-    try {
-      const result = await api.helixa.ideas.createApp(id);
-      alert(`App created! Project ID: ${result.project_id}. Go to Dashboard to continue.`);
-    } catch (e) {
-      console.error(e);
-      alert('Failed to create app from idea.');
+  const createAppFromIdea = (id: number) => {
+    if (onBuildApp) {
+      onBuildApp(id);
     }
   };
 

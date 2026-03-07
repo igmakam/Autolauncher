@@ -19,6 +19,7 @@ export default function Dashboard() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [credStatus, setCredStatus] = useState<CredentialStatus[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
+  const [planterIdeaId, setPlanterIdeaId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
 
   const loadData = async () => {
@@ -73,11 +74,11 @@ export default function Dashboard() {
   }
 
   if (view === 'helixa') {
-    return <HelixaModule onBack={() => { setView('dashboard'); loadData(); }} />;
+    return <HelixaModule onBack={() => { setView('dashboard'); loadData(); }} onBuildApp={(ideaId) => { setPlanterIdeaId(ideaId); setView('planter'); }} />;
   }
 
   if (view === 'planter') {
-    return <Planter onBack={() => { setView('dashboard'); loadData(); }} />;
+    return <Planter onBack={() => { setPlanterIdeaId(null); setView('dashboard'); loadData(); }} initialIdeaId={planterIdeaId} />;
   }
 
   if (loading) {
