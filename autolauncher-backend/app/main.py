@@ -377,7 +377,9 @@ async def update_project(
     return await get_project(project_id, current_user, db)
 
 
-class ProjectDeleteRequest(BaseModel):
+from pydantic import BaseModel as PydanticBaseModel
+
+class ProjectDeleteRequest(PydanticBaseModel):
     password: str
 
 @app.post("/api/projects/{project_id}/delete")
