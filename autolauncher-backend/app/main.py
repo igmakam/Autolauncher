@@ -42,6 +42,10 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
     logger.info("Background pipeline monitor stopped")
+    # Stop DevBrain monitor if running
+    if _devbrain_manager is not None:
+        _devbrain_manager.stop_monitor()
+        logger.info("DevBrain monitor stopped")
 
 app = FastAPI(title="Auto Launch API", lifespan=lifespan)
 
