@@ -61,10 +61,22 @@ async def healthz():
 @app.post("/api/admin/fix-password")
 async def fix_password(db: aiosqlite.Connection = Depends(get_db)):
     """One-time password fix for existing user."""
+    from app.database import DATABASE_PATH
     new_hash = hash_password("Admin123!")
+    # Check current state
+    cursor = await db.execute("SELECT id, email, password_hash FROM users WHERE email = ?", ("marcel.kamon@gmail.com",))
+    row = await cursor.fetchone()
+    if not row:
+        return {"error": "User not found", "db_path": DATABASE_PATH}
+    old_hash = dict(row)["password_hash"]
     await db.execute("UPDATE users SET password_hash = ? WHERE email = ?", (new_hash, "marcel.kamon@gmail.com"))
     await db.commit()
-    return {"message": "Password reset done"}
+    # Verify it was updated
+    cursor2 = await db.execute("SELECT password_hash FROM users WHERE email = ?", ("marcel.kamon@gmail.com",))
+    row2 = await cursor2.fetchone()
+    updated_hash = dict(row2)["password_hash"]
+    works = verify_password("Admin123!", updated_hash)
+    return {"message": "Password reset done", "db_path": DATABASE_PATH, "old_hash_prefix": old_hash[:20], "new_hash_prefix": updated_hash[:20], "verify_works": works}
 
 
 # ==================== AUTH ====================
