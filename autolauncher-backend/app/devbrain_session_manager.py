@@ -192,21 +192,25 @@ class DevBrainSessionManager:
                 self._last_check_at = datetime.now(timezone.utc).isoformat()
                 logger.info("DevBrain monitor: checking active sessions...")
 
+                # Query active sessions with a short-lived DB connection
+                active_sessions = []
                 async with aiosqlite.connect(db_path) as db:
                     db.row_factory = aiosqlite.Row
-
-                    # Get all active sessions (status = running or created)
                     cursor = await db.execute(
                         "SELECT * FROM devbrain_sessions WHERE status IN ('running', 'created') AND auto_monitor = 1"
                     )
                     active_sessions = [dict(row) for row in await cursor.fetchall()]
 
-                    if not active_sessions:
-                        logger.info("DevBrain monitor: no active sessions to check")
-                        await asyncio.sleep(check_interval)
-                        continue
+                if not active_sessions:
+                    logger.info("DevBrain monitor: no active sessions to check")
+                    await asyncio.sleep(check_interval)
+                    continue
 
-                    openai_client = await get_openai_client()
+                # Process active sessions in a separate DB connection
+                openai_client = await get_openai_client()
+
+                async with aiosqlite.connect(db_path) as db:
+                    db.row_factory = aiosqlite.Row
 
                     # Group sessions by user_id and load correct profile per user
                     sessions_by_user: dict[int, list[dict]] = {}
