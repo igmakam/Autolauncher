@@ -3,8 +3,8 @@ import os
 
 DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/app.db")
 
-# Fallback to local path for development
-if not os.path.exists(os.path.dirname(DATABASE_PATH)) and DATABASE_PATH.startswith("/data"):
+# Fallback to local path for development only if /data doesn't exist at all
+if not os.path.exists("/data") and DATABASE_PATH == "/data/app.db":
     DATABASE_PATH = os.path.join(os.path.dirname(__file__), "..", "app.db")
 
 async def get_db():
