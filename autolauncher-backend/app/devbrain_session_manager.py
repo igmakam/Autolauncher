@@ -206,22 +206,31 @@ class DevBrainSessionManager:
                         await asyncio.sleep(check_interval)
                         continue
 
-                    # Load profile for the agent
-                    profile_cursor = await db.execute(
-                        "SELECT * FROM devbrain_profile ORDER BY id DESC LIMIT 1"
-                    )
-                    profile_row = await profile_cursor.fetchone()
-                    profile = dict(profile_row) if profile_row else {}
-
                     openai_client = await get_openai_client()
-                    agent = DevBrainAgent(openai_client)
-                    agent.set_profile(profile)
 
+                    # Group sessions by user_id and load correct profile per user
+                    sessions_by_user: dict[int, list[dict]] = {}
                     for session in active_sessions:
-                        try:
-                            await self._check_single_session(db, agent, session)
-                        except Exception as e:
-                            logger.error(f"Monitor error for session {session.get('devin_session_id')}: {e}")
+                        uid = session.get("user_id", 0)
+                        sessions_by_user.setdefault(uid, []).append(session)
+
+                    for user_id, user_sessions in sessions_by_user.items():
+                        # Load profile for this specific user
+                        profile_cursor = await db.execute(
+                            "SELECT * FROM devbrain_profile WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+                            (user_id,),
+                        )
+                        profile_row = await profile_cursor.fetchone()
+                        profile = dict(profile_row) if profile_row else {}
+
+                        agent = DevBrainAgent(openai_client)
+                        agent.set_profile(profile)
+
+                        for session in user_sessions:
+                            try:
+                                await self._check_single_session(db, agent, session)
+                            except Exception as e:
+                                logger.error(f"Monitor error for session {session.get('devin_session_id')}: {e}")
 
                     await db.commit()
 

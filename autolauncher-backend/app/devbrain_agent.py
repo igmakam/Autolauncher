@@ -255,7 +255,8 @@ Rules:
             )
             text = response.choices[0].message.content.strip()
             if text.startswith("```"):
-                text = text.split("\n", 1)[1]
+                parts = text.split("\n", 1)
+                text = parts[1] if len(parts) > 1 else text[3:]
                 if text.endswith("```"):
                     text = text[:-3]
                 text = text.strip()
