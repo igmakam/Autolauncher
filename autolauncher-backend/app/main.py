@@ -20,7 +20,7 @@ from app.models import (
     PipelineStepResponse, PipelineRunResponse,
     DashboardResponse, SettingUpdate
 )
-from app.ai_engine import get_questionnaire_questions, generate_store_listing, generate_localization, generate_additional_growth_ideas, generate_launch_strategy, generate_campaign_content, analyze_setup_feedback
+from app.ai_engine import get_questionnaire_questions, generate_store_listing, generate_localization, generate_additional_growth_ideas, generate_launch_strategy, generate_campaign_content, analyze_setup_feedback, get_openai_client
 from app.pipeline import create_pipeline_run, get_pipeline_run, get_latest_pipeline_run, run_pipeline, PIPELINE_STEPS, pipeline_monitor_task
 from app.store_api import create_apple_client, create_google_client
 import asyncio
@@ -1969,3 +1969,573 @@ async def seed_data(
 
     await db.commit()
     return {"message": "Data seeded successfully", "results": results}
+
+
+# ==================== DEVBRAIN AGENT ====================
+
+from app.devbrain_models import (
+    MetadataImport, MetadataImportResponse,
+    DevBrainProfileResponse, DevBrainAppResponse,
+    DevBrainSessionCreate, DevBrainSessionResponse, DevBrainSessionDetail,
+    AgentActionResponse, MonitorStatusResponse,
+    SessionReviewRequest, SessionReviewResponse,
+)
+from app.devbrain_agent import DevBrainAgent
+from app.devbrain_session_manager import DevinAPIClient, DevBrainSessionManager
+
+# Global session manager (initialized on first use)
+_devbrain_manager: DevBrainSessionManager | None = None
+
+
+def _get_devin_api_key() -> str:
+    """Get Devin API key from settings or environment."""
+    key = os.getenv("DEVIN_API_KEY", "")
+    return key
+
+
+def _get_session_manager() -> DevBrainSessionManager:
+    """Get or create the global session manager."""
+    global _devbrain_manager
+    if _devbrain_manager is None:
+        api_key = _get_devin_api_key()
+        client = DevinAPIClient(api_key)
+        _devbrain_manager = DevBrainSessionManager(client)
+    return _devbrain_manager
+
+
+@app.post("/api/devbrain/import", response_model=MetadataImportResponse)
+async def devbrain_import_metadata(
+    data: MetadataImport,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Import extracted session metadata into DevBrain."""
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Import user profile (upsert — delete old, insert new)
+    profile = data.user_profile
+    await db.execute("DELETE FROM devbrain_profile")
+    await db.execute(
+        """INSERT INTO devbrain_profile
+           (preferred_tech_stack, coding_conventions, architectural_preferences,
+            communication_style, frustrations, what_works_well, work_patterns,
+            key_principles, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            json.dumps(profile.get("preferred_tech_stack", [])),
+            json.dumps(profile.get("coding_conventions", [])),
+            json.dumps(profile.get("architectural_preferences", [])),
+            profile.get("communication_style", ""),
+            json.dumps(profile.get("frustrations", [])),
+            json.dumps(profile.get("what_works_well", [])),
+            json.dumps(profile.get("work_patterns", [])),
+            json.dumps(profile.get("key_principles", [])),
+            now, now,
+        ),
+    )
+
+    # Import apps catalog
+    apps_imported = 0
+    for app_data in data.apps_catalog:
+        name = app_data.get("name", "").strip()
+        if not name:
+            continue
+        await db.execute(
+            """INSERT INTO devbrain_apps
+               (name, description, status, tech_stack, requirements,
+                related_sessions, session_count, priority, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET
+               description=excluded.description, status=excluded.status,
+               tech_stack=excluded.tech_stack, requirements=excluded.requirements,
+               related_sessions=excluded.related_sessions, session_count=excluded.session_count,
+               priority=excluded.priority""",
+            (
+                name,
+                app_data.get("description", ""),
+                app_data.get("status", "idea"),
+                json.dumps(app_data.get("tech_stack", [])),
+                json.dumps(app_data.get("requirements", [])),
+                json.dumps(app_data.get("related_sessions", [])),
+                app_data.get("session_count", 0),
+                app_data.get("priority", "low"),
+                now,
+            ),
+        )
+        apps_imported += 1
+
+    # Import decisions log
+    decisions_imported = 0
+    for decision in data.decisions_log:
+        await db.execute(
+            """INSERT INTO devbrain_decisions
+               (date, session_id, project, decision, context, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                decision.get("date", ""),
+                decision.get("session_id", ""),
+                decision.get("project", ""),
+                decision.get("decision", ""),
+                decision.get("context", ""),
+                now,
+            ),
+        )
+        decisions_imported += 1
+
+    # Import corrections log
+    corrections_imported = 0
+    for correction in data.corrections_log:
+        await db.execute(
+            """INSERT INTO devbrain_corrections
+               (date, session_id, project, correction, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                correction.get("date", ""),
+                correction.get("session_id", ""),
+                correction.get("project", ""),
+                correction.get("correction", ""),
+                now,
+            ),
+        )
+        corrections_imported += 1
+
+    # Import sessions metadata
+    sessions_imported = 0
+    for session in data.sessions_metadata:
+        sid = session.get("session_id", "")
+        if not sid:
+            continue
+        await db.execute(
+            """INSERT INTO devbrain_sessions_metadata
+               (devin_session_id, date, title, project, goals, decisions,
+                corrections, preferences, outcome, outcome_detail,
+                tech_stack, app_requirements, patterns, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(devin_session_id) DO UPDATE SET
+               title=excluded.title, project=excluded.project,
+               goals=excluded.goals, decisions=excluded.decisions,
+               outcome=excluded.outcome""",
+            (
+                sid,
+                session.get("date", ""),
+                session.get("title", ""),
+                session.get("project", ""),
+                json.dumps(session.get("goals", [])),
+                json.dumps(session.get("decisions", [])),
+                json.dumps(session.get("corrections", [])),
+                json.dumps(session.get("preferences", [])),
+                session.get("outcome", ""),
+                session.get("outcome_detail", ""),
+                json.dumps(session.get("tech_stack", [])),
+                json.dumps(session.get("app_requirements", [])),
+                json.dumps(session.get("patterns", [])),
+                now,
+            ),
+        )
+        sessions_imported += 1
+
+    await db.commit()
+
+    return MetadataImportResponse(
+        message="Metadata imported successfully",
+        apps_imported=apps_imported,
+        decisions_imported=decisions_imported,
+        corrections_imported=corrections_imported,
+        sessions_imported=sessions_imported,
+    )
+
+
+@app.get("/api/devbrain/profile")
+async def devbrain_get_profile(
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get the DevBrain user profile."""
+    cursor = await db.execute("SELECT * FROM devbrain_profile ORDER BY id DESC LIMIT 1")
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="No profile imported yet. Use POST /api/devbrain/import first.")
+    return dict(row)
+
+
+@app.get("/api/devbrain/apps")
+async def devbrain_get_apps(
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get all apps from the DevBrain catalog."""
+    cursor = await db.execute("SELECT * FROM devbrain_apps ORDER BY session_count DESC, name")
+    rows = await cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.get("/api/devbrain/decisions")
+async def devbrain_get_decisions(
+    project: str = "",
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get decisions log, optionally filtered by project."""
+    if project:
+        cursor = await db.execute(
+            "SELECT * FROM devbrain_decisions WHERE project = ? ORDER BY date DESC", (project,)
+        )
+    else:
+        cursor = await db.execute("SELECT * FROM devbrain_decisions ORDER BY date DESC")
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+@app.get("/api/devbrain/corrections")
+async def devbrain_get_corrections(
+    project: str = "",
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get corrections log, optionally filtered by project."""
+    if project:
+        cursor = await db.execute(
+            "SELECT * FROM devbrain_corrections WHERE project = ? ORDER BY date DESC", (project,)
+        )
+    else:
+        cursor = await db.execute("SELECT * FROM devbrain_corrections ORDER BY date DESC")
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+@app.get("/api/devbrain/sessions-metadata")
+async def devbrain_get_sessions_metadata(
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get all imported session metadata."""
+    cursor = await db.execute("SELECT * FROM devbrain_sessions_metadata ORDER BY date DESC")
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+@app.post("/api/devbrain/sessions", response_model=DevBrainSessionResponse)
+async def devbrain_create_session(
+    req: DevBrainSessionCreate,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Create a new Devin session with enriched context from DevBrain metadata."""
+    api_key = _get_devin_api_key()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="DEVIN_API_KEY not configured. Set it as environment variable.")
+
+    # Load profile and apps for the agent
+    profile_cursor = await db.execute("SELECT * FROM devbrain_profile ORDER BY id DESC LIMIT 1")
+    profile_row = await profile_cursor.fetchone()
+    profile = dict(profile_row) if profile_row else {}
+
+    apps_cursor = await db.execute("SELECT * FROM devbrain_apps")
+    apps = [dict(row) for row in await apps_cursor.fetchall()]
+
+    # Load decisions and corrections for this project
+    decisions = []
+    corrections = []
+    if req.app_name:
+        dec_cursor = await db.execute(
+            "SELECT * FROM devbrain_decisions WHERE project = ? ORDER BY date", (req.app_name,)
+        )
+        decisions = [dict(row) for row in await dec_cursor.fetchall()]
+
+        cor_cursor = await db.execute(
+            "SELECT * FROM devbrain_corrections WHERE project = ? ORDER BY date", (req.app_name,)
+        )
+        corrections = [dict(row) for row in await cor_cursor.fetchall()]
+
+    # Build enriched prompt
+    openai_client = await get_openai_client()
+    agent = DevBrainAgent(openai_client)
+    agent.set_profile(profile)
+    agent.set_apps(apps)
+
+    enriched_prompt = await agent.build_enriched_prompt(
+        original_prompt=req.prompt,
+        app_name=req.app_name,
+        decisions_history=decisions,
+        corrections_history=corrections,
+    )
+
+    # Create Devin session via API
+    manager = _get_session_manager()
+    result = await manager.create_session(enriched_prompt)
+    if not result:
+        raise HTTPException(status_code=502, detail="Failed to create Devin session. Check DEVIN_API_KEY and API availability.")
+
+    devin_session_id = result.get("session_id", "")
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Store in DB
+    cursor = await db.execute(
+        """INSERT INTO devbrain_sessions
+           (devin_session_id, app_name, original_prompt, enriched_prompt,
+            status, auto_monitor, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'running', ?, ?, ?)""",
+        (
+            devin_session_id,
+            req.app_name or "",
+            req.prompt,
+            enriched_prompt,
+            1 if req.auto_monitor else 0,
+            now, now,
+        ),
+    )
+    await db.commit()
+    session_id = cursor.lastrowid
+
+    # Start monitor if requested and not already running
+    if req.auto_monitor:
+        manager = _get_session_manager()
+        if not manager.is_monitoring:
+            manager.start_monitor(DATABASE_PATH)
+
+    return DevBrainSessionResponse(
+        id=session_id,
+        devin_session_id=devin_session_id,
+        app_name=req.app_name or "",
+        original_prompt=req.prompt,
+        enriched_prompt=enriched_prompt,
+        status="running",
+        auto_monitor=req.auto_monitor,
+        created_at=now,
+        updated_at=now,
+        last_checked_at=None,
+    )
+
+
+@app.get("/api/devbrain/sessions")
+async def devbrain_list_sessions(
+    status: str = "",
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """List all DevBrain-managed Devin sessions."""
+    if status:
+        cursor = await db.execute(
+            "SELECT * FROM devbrain_sessions WHERE status = ? ORDER BY created_at DESC", (status,)
+        )
+    else:
+        cursor = await db.execute("SELECT * FROM devbrain_sessions ORDER BY created_at DESC")
+    sessions = [dict(row) for row in await cursor.fetchall()]
+    return sessions
+
+
+@app.get("/api/devbrain/sessions/{session_id}")
+async def devbrain_get_session(
+    session_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get a DevBrain session with its agent actions and current Devin status."""
+    cursor = await db.execute("SELECT * FROM devbrain_sessions WHERE id = ?", (session_id,))
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = dict(row)
+
+    # Get actions
+    actions_cursor = await db.execute(
+        "SELECT * FROM devbrain_actions WHERE session_id = ? ORDER BY created_at", (session_id,)
+    )
+    actions = [dict(r) for r in await actions_cursor.fetchall()]
+
+    # Get current Devin status
+    devin_status = None
+    manager = _get_session_manager()
+    if session.get("devin_session_id") and _get_devin_api_key():
+        health = await manager.check_session_health(session["devin_session_id"])
+        devin_status = {
+            "healthy": health.get("healthy"),
+            "status": health.get("status"),
+            "reason": health.get("reason"),
+            "last_activity": health.get("last_activity"),
+        }
+
+    return {
+        "session": session,
+        "actions": actions,
+        "devin_status": devin_status,
+    }
+
+
+@app.post("/api/devbrain/sessions/{session_id}/review")
+async def devbrain_review_session(
+    session_id: int,
+    req: SessionReviewRequest,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Have the DevBrain agent review a session and take action if needed."""
+    cursor = await db.execute("SELECT * FROM devbrain_sessions WHERE id = ?", (session_id,))
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = dict(row)
+
+    devin_session_id = session["devin_session_id"]
+    manager = _get_session_manager()
+
+    # Get session messages from Devin
+    session_data = await manager.get_session_status(devin_session_id)
+    if not session_data:
+        raise HTTPException(status_code=502, detail="Could not fetch session from Devin API")
+
+    messages = session_data.get("messages", [])
+
+    # Load profile
+    profile_cursor = await db.execute("SELECT * FROM devbrain_profile ORDER BY id DESC LIMIT 1")
+    profile_row = await profile_cursor.fetchone()
+    profile = dict(profile_row) if profile_row else {}
+
+    # Create agent and review
+    openai_client = await get_openai_client()
+    agent = DevBrainAgent(openai_client)
+    agent.set_profile(profile)
+
+    review = await agent.review_session_output(
+        session_title=session.get("app_name", "Unknown"),
+        session_messages=messages,
+        app_name=session.get("app_name"),
+    )
+
+    now = datetime.now(timezone.utc).isoformat()
+    actions_taken = []
+
+    # Take action based on review
+    if review.get("needs_comment") and review.get("comment"):
+        comment = review["comment"]
+        sent = await manager.send_comment(devin_session_id, comment)
+        action_type = "correction" if review["review_result"] == "needs_correction" else "comment"
+        await db.execute(
+            "INSERT INTO devbrain_actions (session_id, action_type, content, devin_response, created_at) VALUES (?, ?, ?, ?, ?)",
+            (session_id, action_type, comment, "sent" if sent else "failed", now),
+        )
+        actions_taken.append(f"{action_type}: {comment}")
+
+    if review.get("review_result") == "stalled" and not review.get("needs_comment"):
+        nudge = await agent.generate_nudge(
+            session_title=session.get("app_name", "Unknown"),
+            last_activity="recent",
+        )
+        sent = await manager.send_comment(devin_session_id, nudge)
+        await db.execute(
+            "INSERT INTO devbrain_actions (session_id, action_type, content, devin_response, created_at) VALUES (?, ?, ?, ?, ?)",
+            (session_id, "nudge", nudge, "sent" if sent else "failed", now),
+        )
+        actions_taken.append(f"nudge: {nudge}")
+
+    if review.get("review_result") == "completed":
+        await db.execute(
+            "UPDATE devbrain_sessions SET status = 'completed', updated_at = ? WHERE id = ?",
+            (now, session_id),
+        )
+
+    # Update last checked
+    await db.execute(
+        "UPDATE devbrain_sessions SET last_checked_at = ?, updated_at = ? WHERE id = ?",
+        (now, now, session_id),
+    )
+    await db.commit()
+
+    return SessionReviewResponse(
+        session_id=devin_session_id,
+        review_result=review.get("review_result", "on_track"),
+        actions_taken=actions_taken,
+        details=review.get("details", ""),
+    )
+
+
+@app.post("/api/devbrain/monitor/start")
+async def devbrain_start_monitor(
+    current_user: dict = Depends(get_current_user),
+):
+    """Start the background session monitor."""
+    api_key = _get_devin_api_key()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="DEVIN_API_KEY not configured")
+
+    manager = _get_session_manager()
+    if manager.is_monitoring:
+        return {"message": "Monitor already running", "is_running": True}
+
+    manager.start_monitor(DATABASE_PATH, check_interval=300)
+    return {"message": "Monitor started (checking every 5 minutes)", "is_running": True}
+
+
+@app.post("/api/devbrain/monitor/stop")
+async def devbrain_stop_monitor(
+    current_user: dict = Depends(get_current_user),
+):
+    """Stop the background session monitor."""
+    manager = _get_session_manager()
+    manager.stop_monitor()
+    return {"message": "Monitor stopped", "is_running": False}
+
+
+@app.get("/api/devbrain/monitor/status", response_model=MonitorStatusResponse)
+async def devbrain_monitor_status(
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get the current status of the DevBrain monitor."""
+    manager = _get_session_manager()
+
+    # Count active sessions
+    cursor = await db.execute(
+        "SELECT COUNT(*) as cnt FROM devbrain_sessions WHERE status IN ('running', 'created')"
+    )
+    active = (await cursor.fetchone())["cnt"]
+
+    # Count total actions
+    cursor = await db.execute("SELECT COUNT(*) as cnt FROM devbrain_actions")
+    total_actions = (await cursor.fetchone())["cnt"]
+
+    return MonitorStatusResponse(
+        is_running=manager.is_monitoring,
+        active_sessions=active,
+        total_actions_taken=total_actions,
+        last_check_at=manager.last_check_at,
+    )
+
+
+@app.get("/api/devbrain/context/{app_name}")
+async def devbrain_get_context(
+    app_name: str,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get the full DevBrain context for a specific app — useful for previewing what enrichment would look like."""
+    # Get app info
+    cursor = await db.execute("SELECT * FROM devbrain_apps WHERE name = ?", (app_name,))
+    app_row = await cursor.fetchone()
+
+    # Get decisions
+    dec_cursor = await db.execute(
+        "SELECT * FROM devbrain_decisions WHERE project = ? ORDER BY date", (app_name,)
+    )
+    decisions = [dict(row) for row in await dec_cursor.fetchall()]
+
+    # Get corrections
+    cor_cursor = await db.execute(
+        "SELECT * FROM devbrain_corrections WHERE project = ? ORDER BY date", (app_name,)
+    )
+    corrections = [dict(row) for row in await cor_cursor.fetchall()]
+
+    # Get related sessions
+    ses_cursor = await db.execute(
+        "SELECT * FROM devbrain_sessions_metadata WHERE project = ? ORDER BY date", (app_name,)
+    )
+    sessions = [dict(row) for row in await ses_cursor.fetchall()]
+
+    # Get profile
+    profile_cursor = await db.execute("SELECT * FROM devbrain_profile ORDER BY id DESC LIMIT 1")
+    profile_row = await profile_cursor.fetchone()
+
+    return {
+        "app": dict(app_row) if app_row else None,
+        "decisions": decisions,
+        "corrections": corrections,
+        "sessions": sessions,
+        "profile": dict(profile_row) if profile_row else None,
+    }

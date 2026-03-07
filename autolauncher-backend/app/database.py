@@ -244,6 +244,97 @@ async def init_db():
             FOREIGN KEY (user_id) REFERENCES users(id),
             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         );
+
+        -- DevBrain Tables
+        CREATE TABLE IF NOT EXISTS devbrain_profile (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            preferred_tech_stack TEXT DEFAULT '[]',
+            coding_conventions TEXT DEFAULT '[]',
+            architectural_preferences TEXT DEFAULT '[]',
+            communication_style TEXT DEFAULT '',
+            frustrations TEXT DEFAULT '[]',
+            what_works_well TEXT DEFAULT '[]',
+            work_patterns TEXT DEFAULT '[]',
+            key_principles TEXT DEFAULT '[]',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS devbrain_apps (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            status TEXT DEFAULT 'idea',
+            tech_stack TEXT DEFAULT '[]',
+            requirements TEXT DEFAULT '[]',
+            related_sessions TEXT DEFAULT '[]',
+            session_count INTEGER DEFAULT 0,
+            priority TEXT DEFAULT 'low',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(name)
+        );
+
+        CREATE TABLE IF NOT EXISTS devbrain_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT DEFAULT '',
+            session_id TEXT DEFAULT '',
+            project TEXT DEFAULT '',
+            decision TEXT DEFAULT '',
+            context TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS devbrain_corrections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT DEFAULT '',
+            session_id TEXT DEFAULT '',
+            project TEXT DEFAULT '',
+            correction TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS devbrain_sessions_metadata (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            devin_session_id TEXT NOT NULL,
+            date TEXT DEFAULT '',
+            title TEXT DEFAULT '',
+            project TEXT DEFAULT '',
+            goals TEXT DEFAULT '[]',
+            decisions TEXT DEFAULT '[]',
+            corrections TEXT DEFAULT '[]',
+            preferences TEXT DEFAULT '[]',
+            outcome TEXT DEFAULT '',
+            outcome_detail TEXT DEFAULT '',
+            tech_stack TEXT DEFAULT '[]',
+            app_requirements TEXT DEFAULT '[]',
+            patterns TEXT DEFAULT '[]',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(devin_session_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS devbrain_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            devin_session_id TEXT NOT NULL,
+            app_name TEXT DEFAULT '',
+            original_prompt TEXT DEFAULT '',
+            enriched_prompt TEXT DEFAULT '',
+            status TEXT DEFAULT 'created',
+            auto_monitor INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_checked_at TIMESTAMP,
+            UNIQUE(devin_session_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS devbrain_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            action_type TEXT NOT NULL DEFAULT 'comment',
+            content TEXT DEFAULT '',
+            devin_response TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (session_id) REFERENCES devbrain_sessions(id) ON DELETE CASCADE
+        );
     """)
 
     # Add block_type and retry_count columns to pipeline_steps (safe for existing DBs)
