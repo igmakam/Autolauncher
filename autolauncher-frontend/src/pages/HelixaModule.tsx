@@ -18,7 +18,7 @@ interface Props {
 
 // ============ VOICE RECORDER ============
 
-function VoiceRecorder({ onTranscript, onTextSubmit }: { onTranscript: (text: string) => void; onTextSubmit: (text: string) => void }) {
+function VoiceRecorder({ onTranscript, onTextSubmit, autoSubmitVoice = true }: { onTranscript: (text: string) => void; onTextSubmit: (text: string) => void; autoSubmitVoice?: boolean }) {
   const [recording, setRecording] = useState(false);
   const [textInput, setTextInput] = useState('');
   const [transcribing, setTranscribing] = useState(false);
@@ -37,8 +37,14 @@ function VoiceRecorder({ onTranscript, onTextSubmit }: { onTranscript: (text: st
         setTranscribing(true);
         try {
           const result = await api.helixa.transcribe(blob);
-          onTranscript(result.text);
-          setTextInput(result.text);
+          const transcribedText = result.text;
+          onTranscript(transcribedText);
+          setTextInput(transcribedText);
+          // Auto-submit voice recordings so they are always saved
+          if (autoSubmitVoice && transcribedText.trim()) {
+            onTextSubmit(transcribedText.trim());
+            setTextInput('');
+          }
         } catch {
           alert('Transcription failed. Try typing instead.');
         } finally {
