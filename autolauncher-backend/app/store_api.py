@@ -125,7 +125,7 @@ class AppStoreConnectAPI:
         """Get existing editable version or create a new one."""
         try:
             result = await self._request("GET", f"/apps/{app_id}/appStoreVersions",
-                                          params={"limit": 5, "sort": "-createdDate"})
+                                          params={"limit": 5})
             if result["status"] == 200:
                 versions = result["data"].get("data", [])
                 for v in versions:
@@ -341,7 +341,7 @@ class AppStoreConnectAPI:
         """Get current review status of the app."""
         try:
             result = await self._request("GET", f"/apps/{app_id}/appStoreVersions",
-                                          params={"limit": 1, "sort": "-createdDate"})
+                                          params={"limit": 1})
             if result["status"] == 200:
                 versions = result["data"].get("data", [])
                 if versions:
