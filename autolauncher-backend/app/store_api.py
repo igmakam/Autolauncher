@@ -9,6 +9,31 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def _strip_emoji(text: str) -> str:
+    """Remove emoji characters that Apple App Store Connect API rejects."""
+    import re
+    # Remove emoji unicode ranges
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport & map symbols
+        "\U0001F1E0-\U0001F1FF"  # flags
+        "\U00002702-\U000027B0"  # dingbats
+        "\U000024C2-\U0001F251"  # enclosed characters
+        "\U0001f926-\U0001f937"  # additional
+        "\U00010000-\U0010ffff"  # supplementary
+        "\u200d"                 # zero width joiner
+        "\u2640-\u2642"          # gender
+        "\ufe0f"                 # variation selector
+        "\u2600-\u26FF"          # misc symbols
+        "\u2700-\u27BF"          # dingbats
+        "]+",
+        flags=re.UNICODE,
+    )
+    return emoji_pattern.sub("", text).strip()
+
+
 class AppStoreConnectAPI:
     """Integration with Apple's App Store Connect API v2.
 
@@ -199,13 +224,13 @@ class AppStoreConnectAPI:
         try:
             attributes = {}
             if listing_data.get("description"):
-                attributes["description"] = listing_data["description"][:4000]
+                attributes["description"] = _strip_emoji(listing_data["description"])[:4000]
             if listing_data.get("keywords"):
-                attributes["keywords"] = listing_data["keywords"][:100]
+                attributes["keywords"] = _strip_emoji(listing_data["keywords"])[:100]
             if listing_data.get("whats_new") or listing_data.get("whatsNew"):
-                attributes["whatsNew"] = (listing_data.get("whats_new") or listing_data.get("whatsNew", ""))[:4000]
+                attributes["whatsNew"] = _strip_emoji(listing_data.get("whats_new") or listing_data.get("whatsNew", ""))[:4000]
             if listing_data.get("promotional_text") or listing_data.get("promotionalText"):
-                attributes["promotionalText"] = (listing_data.get("promotional_text") or listing_data.get("promotionalText", ""))[:170]
+                attributes["promotionalText"] = _strip_emoji(listing_data.get("promotional_text") or listing_data.get("promotionalText", ""))[:170]
 
             if not attributes:
                 return {"success": True, "message": "No fields to update"}
@@ -292,9 +317,9 @@ class AppStoreConnectAPI:
         try:
             attributes = {}
             if listing_data.get("title"):
-                attributes["name"] = listing_data["title"][:30]
+                attributes["name"] = _strip_emoji(listing_data["title"])[:30]
             if listing_data.get("subtitle"):
-                attributes["subtitle"] = listing_data["subtitle"][:30]
+                attributes["subtitle"] = _strip_emoji(listing_data["subtitle"])[:30]
             if listing_data.get("privacy_policy_url"):
                 attributes["privacyPolicyUrl"] = listing_data["privacy_policy_url"]
 
