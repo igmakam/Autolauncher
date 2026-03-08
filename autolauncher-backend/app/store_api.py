@@ -2,12 +2,25 @@
 import json
 import time
 import jwt as pyjwt
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 
 class AppStoreConnectAPI:
-    """Integration with Apple's App Store Connect API v2."""
+    """Integration with Apple's App Store Connect API v2.
+
+    Full launch flow:
+    1. validate_credentials() - verify API key works
+    2. find_app(bundle_id) - find app by bundle ID
+    3. get_or_create_version(app_id) - get existing or create new version
+    4. update_version_localization(version_id, listing) - update description, keywords
+    5. update_app_info_localization(app_id, listing) - update name, subtitle
+    6. submit_for_review(version_id) - submit for Apple review
+    7. get_review_status(app_id) - check review progress
+    """
 
     def __init__(self, key_id: str, issuer_id: str, private_key: str):
         self.key_id = key_id
@@ -26,115 +39,364 @@ class AppStoreConnectAPI:
         }
         return pyjwt.encode(payload, self.private_key, algorithm="ES256", headers={"kid": self.key_id})
 
+    async def _request(self, method: str, path: str, json_data: dict = None, params: dict = None, timeout: float = 15.0) -> dict:
+        """Make an authenticated API request."""
+        import httpx
+        token = self._generate_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        if json_data is not None:
+            headers["Content-Type"] = "application/json"
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            url = f"{self.base_url}{path}" if path.startswith("/") else path
+            if method == "GET":
+                resp = await client.get(url, headers=headers, params=params)
+            elif method == "POST":
+                resp = await client.post(url, headers=headers, json=json_data)
+            elif method == "PATCH":
+                resp = await client.patch(url, headers=headers, json=json_data)
+            elif method == "DELETE":
+                resp = await client.delete(url, headers=headers)
+            else:
+                resp = await client.put(url, headers=headers, json=json_data)
+
+            result = {"status": resp.status_code}
+            try:
+                result["data"] = resp.json()
+            except Exception:
+                result["data"] = {}
+                result["text"] = resp.text[:500]
+            return result
+
     async def validate_credentials(self) -> dict:
         """Validate Apple API credentials by making a test request."""
         try:
-            import httpx
-            token = self._generate_token()
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.get(
-                    f"{self.base_url}/apps",
-                    headers={"Authorization": f"Bearer {token}"},
-                    params={"limit": 1},
-                )
-                if response.status_code == 200:
-                    return {"valid": True, "message": "Apple API credentials validated successfully"}
-                else:
-                    return {"valid": False, "message": f"Apple API returned status {response.status_code}: {response.text[:200]}"}
+            result = await self._request("GET", "/apps", params={"limit": 1})
+            if result["status"] == 200:
+                return {"valid": True, "message": "Apple API credentials validated successfully"}
+            else:
+                return {"valid": False, "message": f"Apple API returned status {result['status']}: {str(result.get('data', result.get('text', '')))[:200]}"}
         except Exception as e:
             return {"valid": False, "message": f"Validation failed: {str(e)}"}
 
-    async def create_app(self, bundle_id: str, name: str, sku: str, primary_locale: str = "en-US") -> dict:
-        """Create a new app in App Store Connect."""
+    async def list_apps(self) -> dict:
+        """List all apps in the account."""
         try:
-            import httpx
-            token = self._generate_token()
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    f"{self.base_url}/apps",
-                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                    json={
-                        "data": {
-                            "type": "apps",
-                            "attributes": {
-                                "bundleId": bundle_id,
-                                "name": name,
-                                "sku": sku,
-                                "primaryLocale": primary_locale,
+            result = await self._request("GET", "/apps", params={"limit": 200})
+            if result["status"] == 200:
+                apps = result["data"].get("data", [])
+                return {
+                    "success": True,
+                    "apps": [
+                        {
+                            "id": app["id"],
+                            "name": app["attributes"].get("name", ""),
+                            "bundle_id": app["attributes"].get("bundleId", ""),
+                            "sku": app["attributes"].get("sku", ""),
+                        }
+                        for app in apps
+                    ]
+                }
+            return {"success": False, "error": f"HTTP {result['status']}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def find_app(self, bundle_id: str) -> dict:
+        """Find an app by bundle ID."""
+        try:
+            result = await self._request("GET", "/apps", params={"filter[bundleId]": bundle_id})
+            if result["status"] == 200:
+                apps = result["data"].get("data", [])
+                if apps:
+                    app = apps[0]
+                    return {
+                        "success": True,
+                        "found": True,
+                        "app_id": app["id"],
+                        "name": app["attributes"].get("name", ""),
+                        "bundle_id": app["attributes"].get("bundleId", ""),
+                    }
+                return {"success": True, "found": False, "error": f"No app with bundle ID '{bundle_id}'"}
+            return {"success": False, "error": f"HTTP {result['status']}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def get_or_create_version(self, app_id: str, version_string: str = "1.0", platform: str = "IOS") -> dict:
+        """Get existing editable version or create a new one."""
+        try:
+            result = await self._request("GET", f"/apps/{app_id}/appStoreVersions",
+                                          params={"limit": 5, "sort": "-createdDate"})
+            if result["status"] == 200:
+                versions = result["data"].get("data", [])
+                for v in versions:
+                    state = v["attributes"].get("appStoreState", "")
+                    if state in ("PREPARE_FOR_SUBMISSION", "DEVELOPER_REJECTED", "REJECTED"):
+                        return {
+                            "success": True,
+                            "version_id": v["id"],
+                            "version_string": v["attributes"].get("versionString", ""),
+                            "state": state,
+                            "created": False,
+                        }
+
+                create_result = await self._request("POST", "/appStoreVersions", json_data={
+                    "data": {
+                        "type": "appStoreVersions",
+                        "attributes": {
+                            "versionString": version_string,
+                            "platform": platform,
+                        },
+                        "relationships": {
+                            "app": {
+                                "data": {"type": "apps", "id": app_id}
                             }
                         }
                     }
-                )
-                return {"success": response.status_code in (200, 201), "data": response.json(), "status": response.status_code}
+                })
+                if create_result["status"] in (200, 201):
+                    v = create_result["data"].get("data", {})
+                    return {
+                        "success": True,
+                        "version_id": v.get("id", ""),
+                        "version_string": v.get("attributes", {}).get("versionString", version_string),
+                        "state": "PREPARE_FOR_SUBMISSION",
+                        "created": True,
+                    }
+                else:
+                    error_detail = str(create_result.get("data", {}).get("errors", create_result.get("text", "")))[:300]
+                    return {"success": False, "error": f"Failed to create version: {error_detail}"}
+
+            return {"success": False, "error": f"HTTP {result['status']}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def update_app_info(self, app_id: str, listing_data: dict) -> dict:
-        """Update app store listing metadata."""
+    async def get_version_localizations(self, version_id: str) -> dict:
+        """Get all localizations for a version."""
         try:
-            import httpx
-            token = self._generate_token()
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                # Get app info localizations
-                response = await client.get(
-                    f"{self.base_url}/apps/{app_id}/appInfos",
-                    headers={"Authorization": f"Bearer {token}"},
-                )
-                if response.status_code != 200:
-                    return {"success": False, "error": f"Failed to get app info: {response.status_code}"}
-
-                return {"success": True, "message": "App info update initiated", "data": response.json()}
+            result = await self._request("GET", f"/appStoreVersions/{version_id}/appStoreVersionLocalizations")
+            if result["status"] == 200:
+                locs = result["data"].get("data", [])
+                return {
+                    "success": True,
+                    "localizations": [
+                        {
+                            "id": loc["id"],
+                            "locale": loc["attributes"].get("locale", ""),
+                            "description": loc["attributes"].get("description", ""),
+                            "keywords": loc["attributes"].get("keywords", ""),
+                            "whatsNew": loc["attributes"].get("whatsNew", ""),
+                            "promotionalText": loc["attributes"].get("promotionalText", ""),
+                        }
+                        for loc in locs
+                    ]
+                }
+            return {"success": False, "error": f"HTTP {result['status']}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def submit_for_review(self, app_id: str, version_id: str) -> dict:
+    async def update_version_localization(self, localization_id: str, listing_data: dict) -> dict:
+        """Update version localization (description, keywords, whatsNew, promotionalText)."""
+        try:
+            attributes = {}
+            if listing_data.get("description"):
+                attributes["description"] = listing_data["description"][:4000]
+            if listing_data.get("keywords"):
+                attributes["keywords"] = listing_data["keywords"][:100]
+            if listing_data.get("whats_new") or listing_data.get("whatsNew"):
+                attributes["whatsNew"] = (listing_data.get("whats_new") or listing_data.get("whatsNew", ""))[:4000]
+            if listing_data.get("promotional_text") or listing_data.get("promotionalText"):
+                attributes["promotionalText"] = (listing_data.get("promotional_text") or listing_data.get("promotionalText", ""))[:170]
+
+            if not attributes:
+                return {"success": True, "message": "No fields to update"}
+
+            result = await self._request("PATCH", f"/appStoreVersionLocalizations/{localization_id}", json_data={
+                "data": {
+                    "type": "appStoreVersionLocalizations",
+                    "id": localization_id,
+                    "attributes": attributes,
+                }
+            })
+            if result["status"] == 200:
+                return {"success": True, "message": "Version localization updated"}
+            else:
+                error_detail = str(result.get("data", {}).get("errors", result.get("text", "")))[:300]
+                return {"success": False, "error": f"Update failed: {error_detail}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def create_version_localization(self, version_id: str, locale: str, listing_data: dict) -> dict:
+        """Create a new version localization for a given locale."""
+        try:
+            attributes = {"locale": locale}
+            if listing_data.get("description"):
+                attributes["description"] = listing_data["description"][:4000]
+            if listing_data.get("keywords"):
+                attributes["keywords"] = listing_data["keywords"][:100]
+
+            result = await self._request("POST", "/appStoreVersionLocalizations", json_data={
+                "data": {
+                    "type": "appStoreVersionLocalizations",
+                    "attributes": attributes,
+                    "relationships": {
+                        "appStoreVersion": {
+                            "data": {"type": "appStoreVersions", "id": version_id}
+                        }
+                    }
+                }
+            })
+            if result["status"] in (200, 201):
+                loc = result["data"].get("data", {})
+                return {"success": True, "id": loc.get("id", ""), "locale": locale}
+            else:
+                error_detail = str(result.get("data", {}).get("errors", result.get("text", "")))[:300]
+                return {"success": False, "error": f"Create localization failed: {error_detail}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def get_app_info_localizations(self, app_id: str) -> dict:
+        """Get app info and its localizations (name, subtitle, privacy URL)."""
+        try:
+            result = await self._request("GET", f"/apps/{app_id}/appInfos")
+            if result["status"] != 200:
+                return {"success": False, "error": f"HTTP {result['status']}"}
+
+            infos = result["data"].get("data", [])
+            if not infos:
+                return {"success": False, "error": "No app info found"}
+
+            info_id = infos[0]["id"]
+            loc_result = await self._request("GET", f"/appInfos/{info_id}/appInfoLocalizations")
+            if loc_result["status"] == 200:
+                locs = loc_result["data"].get("data", [])
+                return {
+                    "success": True,
+                    "app_info_id": info_id,
+                    "localizations": [
+                        {
+                            "id": loc["id"],
+                            "locale": loc["attributes"].get("locale", ""),
+                            "name": loc["attributes"].get("name", ""),
+                            "subtitle": loc["attributes"].get("subtitle", ""),
+                            "privacyPolicyUrl": loc["attributes"].get("privacyPolicyUrl", ""),
+                        }
+                        for loc in locs
+                    ]
+                }
+            return {"success": False, "error": f"HTTP {loc_result['status']}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def update_app_info_localization(self, localization_id: str, listing_data: dict) -> dict:
+        """Update app info localization (name, subtitle)."""
+        try:
+            attributes = {}
+            if listing_data.get("title"):
+                attributes["name"] = listing_data["title"][:30]
+            if listing_data.get("subtitle"):
+                attributes["subtitle"] = listing_data["subtitle"][:30]
+            if listing_data.get("privacy_policy_url"):
+                attributes["privacyPolicyUrl"] = listing_data["privacy_policy_url"]
+
+            if not attributes:
+                return {"success": True, "message": "No fields to update"}
+
+            result = await self._request("PATCH", f"/appInfoLocalizations/{localization_id}", json_data={
+                "data": {
+                    "type": "appInfoLocalizations",
+                    "id": localization_id,
+                    "attributes": attributes,
+                }
+            })
+            if result["status"] == 200:
+                return {"success": True, "message": "App info localization updated"}
+            else:
+                error_detail = str(result.get("data", {}).get("errors", result.get("text", "")))[:300]
+                return {"success": False, "error": f"Update failed: {error_detail}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def submit_for_review(self, version_id: str) -> dict:
         """Submit app version for App Store review."""
         try:
-            import httpx
-            token = self._generate_token()
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                response = await client.post(
-                    f"{self.base_url}/appStoreVersionSubmissions",
-                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                    json={
-                        "data": {
-                            "type": "appStoreVersionSubmissions",
-                            "relationships": {
-                                "appStoreVersion": {
-                                    "data": {"type": "appStoreVersions", "id": version_id}
-                                }
-                            }
+            result = await self._request("POST", "/appStoreVersionSubmissions", json_data={
+                "data": {
+                    "type": "appStoreVersionSubmissions",
+                    "relationships": {
+                        "appStoreVersion": {
+                            "data": {"type": "appStoreVersions", "id": version_id}
                         }
                     }
-                )
-                return {"success": response.status_code in (200, 201), "data": response.json(), "status": response.status_code}
+                }
+            })
+            if result["status"] in (200, 201):
+                return {"success": True, "message": "Submitted for review"}
+            else:
+                error_detail = str(result.get("data", {}).get("errors", result.get("text", "")))[:500]
+                return {"success": False, "error": f"Submit failed: {error_detail}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     async def get_review_status(self, app_id: str) -> dict:
         """Get current review status of the app."""
         try:
-            import httpx
-            token = self._generate_token()
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.get(
-                    f"{self.base_url}/apps/{app_id}/appStoreVersions",
-                    headers={"Authorization": f"Bearer {token}"},
-                    params={"limit": 1, "sort": "-createdDate"},
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    versions = data.get("data", [])
-                    if versions:
-                        version = versions[0]
-                        return {
-                            "success": True,
-                            "version": version["attributes"].get("versionString", ""),
-                            "state": version["attributes"].get("appStoreState", "UNKNOWN"),
-                        }
-                return {"success": False, "state": "UNKNOWN"}
+            result = await self._request("GET", f"/apps/{app_id}/appStoreVersions",
+                                          params={"limit": 1, "sort": "-createdDate"})
+            if result["status"] == 200:
+                versions = result["data"].get("data", [])
+                if versions:
+                    version = versions[0]
+                    return {
+                        "success": True,
+                        "version_id": version["id"],
+                        "version": version["attributes"].get("versionString", ""),
+                        "state": version["attributes"].get("appStoreState", "UNKNOWN"),
+                    }
+                return {"success": False, "state": "NO_VERSIONS"}
+            return {"success": False, "state": "API_ERROR", "error": f"HTTP {result['status']}"}
         except Exception as e:
             return {"success": False, "error": str(e), "state": "ERROR"}
+
+    async def full_listing_update(self, app_id: str, listing_data: dict) -> dict:
+        """Complete listing update: version localization + app info localization.
+
+        listing_data should have: title, subtitle, description, keywords
+        Returns detailed result of each step.
+        """
+        results = {"steps": [], "success": True}
+
+        # Step 1: Get or create version
+        version_result = await self.get_or_create_version(app_id)
+        results["steps"].append({"step": "get_version", "result": version_result})
+        if not version_result.get("success"):
+            results["success"] = False
+            return results
+        version_id = version_result["version_id"]
+        results["version_id"] = version_id
+
+        # Step 2: Update version localization (description, keywords)
+        loc_result = await self.get_version_localizations(version_id)
+        results["steps"].append({"step": "get_version_locs", "result": loc_result})
+        if loc_result.get("success") and loc_result.get("localizations"):
+            en_loc = next((loc for loc in loc_result["localizations"] if loc["locale"] == "en-US"), loc_result["localizations"][0])
+            update_result = await self.update_version_localization(en_loc["id"], listing_data)
+            results["steps"].append({"step": "update_version_loc", "result": update_result})
+            if not update_result.get("success"):
+                results["success"] = False
+        elif loc_result.get("success"):
+            create_loc = await self.create_version_localization(version_id, "en-US", listing_data)
+            results["steps"].append({"step": "create_version_loc", "result": create_loc})
+
+        # Step 3: Update app info localization (name, subtitle)
+        if listing_data.get("title") or listing_data.get("subtitle"):
+            info_result = await self.get_app_info_localizations(app_id)
+            results["steps"].append({"step": "get_info_locs", "result": info_result})
+            if info_result.get("success") and info_result.get("localizations"):
+                en_info = next((loc for loc in info_result["localizations"] if loc["locale"] == "en-US"), info_result["localizations"][0])
+                info_update = await self.update_app_info_localization(en_info["id"], listing_data)
+                results["steps"].append({"step": "update_info_loc", "result": info_update})
+
+        return results
 
 
 class GooglePlayAPI:

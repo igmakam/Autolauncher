@@ -246,6 +246,17 @@ async def init_db():
             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS project_settings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id INTEGER NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(project_id, key),
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS planter_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,

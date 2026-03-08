@@ -906,6 +906,234 @@ async def start_pipeline(
     return {"message": "Pipeline started", "run_id": run_id}
 
 
+@app.post("/api/projects/{project_id}/apple-launch")
+async def apple_launch(
+    project_id: int,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """Apple-only launch: validates credentials, finds app, updates listing, submits for review.
+    This is the real Apple App Store Connect API flow — no simulation."""
+    user_id = int(current_user["sub"])
+
+    # Get project
+    cursor = await db.execute("SELECT * FROM projects WHERE id = ? AND user_id = ?", (project_id, user_id))
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Project not found")
+    project = dict(row)
+
+    # Get Apple credentials
+    cursor = await db.execute(
+        "SELECT credential_data FROM credentials WHERE user_id = ? AND credential_type = 'apple'",
+        (user_id,))
+    apple_row = await cursor.fetchone()
+    if not apple_row:
+        raise HTTPException(status_code=400, detail="Apple API credentials not configured. Go to Setup Wizard → Apple Developer step.")
+    apple_creds = json.loads(apple_row["credential_data"])
+
+    if not (apple_creds.get("key_id") and apple_creds.get("private_key") and apple_creds.get("issuer_id")):
+        raise HTTPException(status_code=400, detail="Apple credentials incomplete — need Key ID, Issuer ID, and Private Key (.p8)")
+
+    # Create Apple client
+    client = create_apple_client(apple_creds)
+    if not client:
+        raise HTTPException(status_code=500, detail="Failed to create Apple API client")
+
+    # Get listing data
+    cursor = await db.execute(
+        "SELECT * FROM store_listings WHERE project_id = ? AND platform = 'ios'", (project_id,))
+    listing_row = await cursor.fetchone()
+    if not listing_row:
+        # Try any platform listing
+        cursor = await db.execute(
+            "SELECT * FROM store_listings WHERE project_id = ? LIMIT 1", (project_id,))
+        listing_row = await cursor.fetchone()
+    if not listing_row:
+        raise HTTPException(status_code=400, detail="No store listing found. Generate one first via AI Listing tab.")
+    listing_data = dict(listing_row)
+
+    bundle_id = project.get("bundle_id", "")
+    if not bundle_id:
+        raise HTTPException(status_code=400, detail="Bundle ID not set for this project. Update project settings.")
+
+    # Run the Apple launch flow in background
+    async def _run_apple_launch():
+        steps_log = []
+        try:
+            # Update project status
+            await db.execute(
+                "UPDATE projects SET status = 'apple_launch_running', updated_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), project_id))
+            await db.commit()
+
+            # Step 1: Validate credentials
+            val = await client.validate_credentials()
+            steps_log.append({"step": "validate_credentials", "success": val.get("valid", False), "detail": val.get("message", "")})
+            if not val.get("valid"):
+                await _save_apple_launch_result(db, project_id, "failed", steps_log, "Credential validation failed")
+                return
+
+            # Step 2: Find app by bundle ID
+            find_result = await client.find_app(bundle_id)
+            steps_log.append({"step": "find_app", "success": find_result.get("found", False), "detail": find_result})
+            if not find_result.get("found"):
+                await _save_apple_launch_result(db, project_id, "failed", steps_log,
+                    f"App with bundle ID '{bundle_id}' not found in App Store Connect. Register the app first.")
+                return
+            app_id = find_result["app_id"]
+
+            # Step 3: Get or create version
+            version_result = await client.get_or_create_version(app_id)
+            steps_log.append({"step": "get_version", "success": version_result.get("success", False), "detail": version_result})
+            if not version_result.get("success"):
+                await _save_apple_launch_result(db, project_id, "failed", steps_log,
+                    f"Failed to get/create version: {version_result.get('error', 'unknown')}")
+                return
+            version_id = version_result["version_id"]
+
+            # Step 4: Update listing (description, keywords, name, subtitle)
+            listing_update = await client.full_listing_update(app_id, listing_data)
+            listing_success = listing_update.get("success", False)
+            steps_log.append({"step": "update_listing", "success": listing_success, "detail": listing_update})
+
+            # Step 5: Try to submit for review
+            submit_result = await client.submit_for_review(version_id)
+            steps_log.append({"step": "submit_for_review", "success": submit_result.get("success", False), "detail": submit_result})
+
+            # Step 6: Get current review status
+            status_result = await client.get_review_status(app_id)
+            steps_log.append({"step": "review_status", "success": True, "detail": status_result})
+
+            # Determine overall result
+            if submit_result.get("success"):
+                final_status = "submitted"
+                final_msg = f"App submitted for Apple review! Version: {version_result.get('version_string', '?')}, State: {status_result.get('state', '?')}"
+            elif listing_success:
+                final_status = "listing_updated"
+                final_msg = f"Listing updated on App Store Connect. Submit for review requires a binary upload first. Version: {version_result.get('version_string', '?')}"
+            else:
+                final_status = "partial"
+                final_msg = "Some steps completed. Check details for errors."
+
+            await _save_apple_launch_result(db, project_id, final_status, steps_log, final_msg)
+
+        except Exception as e:
+            logger.error(f"Apple launch error for project {project_id}: {e}")
+            steps_log.append({"step": "error", "success": False, "detail": str(e)})
+            await _save_apple_launch_result(db, project_id, "failed", steps_log, str(e))
+
+    background_tasks.add_task(_run_apple_launch)
+
+    return {"message": "Apple launch started", "project_id": project_id}
+
+
+async def _save_apple_launch_result(db: aiosqlite.Connection, project_id: int, status: str, steps: list, message: str):
+    """Save Apple launch result to database."""
+    try:
+        # Store result as JSON in a settings-like table, or update project
+        result_data = json.dumps({"status": status, "steps": steps, "message": message, "timestamp": datetime.now(timezone.utc).isoformat()})
+
+        # Check if apple_launch_result exists
+        cursor = await db.execute(
+            "SELECT id FROM project_settings WHERE project_id = ? AND key = 'apple_launch_result'",
+            (project_id,))
+        existing = await cursor.fetchone()
+        if existing:
+            await db.execute(
+                "UPDATE project_settings SET value = ? WHERE project_id = ? AND key = 'apple_launch_result'",
+                (result_data, project_id))
+        else:
+            await db.execute(
+                "INSERT INTO project_settings (project_id, key, value) VALUES (?, 'apple_launch_result', ?)",
+                (project_id, result_data))
+
+        # Update project status
+        project_status = "submitted" if status == "submitted" else ("listing_updated" if status == "listing_updated" else "pipeline_failed")
+        await db.execute(
+            "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
+            (project_status, datetime.now(timezone.utc).isoformat(), project_id))
+        await db.commit()
+    except Exception as e:
+        logger.error(f"Failed to save apple launch result: {e}")
+        try:
+            await db.commit()
+        except Exception:
+            pass
+
+
+@app.get("/api/projects/{project_id}/apple-launch/status")
+async def get_apple_launch_status(
+    project_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """Get the status of the Apple launch for a project."""
+    user_id = int(current_user["sub"])
+    cursor = await db.execute("SELECT id FROM projects WHERE id = ? AND user_id = ?", (project_id, user_id))
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    cursor = await db.execute(
+        "SELECT value FROM project_settings WHERE project_id = ? AND key = 'apple_launch_result'",
+        (project_id,))
+    row = await cursor.fetchone()
+    if not row:
+        return {"status": "not_started", "message": "Apple launch has not been started yet"}
+
+    return json.loads(row["value"])
+
+
+@app.get("/api/apple/apps")
+async def list_apple_apps(
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """List all apps in the user's App Store Connect account."""
+    user_id = int(current_user["sub"])
+    cursor = await db.execute(
+        "SELECT credential_data FROM credentials WHERE user_id = ? AND credential_type = 'apple'",
+        (user_id,))
+    apple_row = await cursor.fetchone()
+    if not apple_row:
+        raise HTTPException(status_code=400, detail="Apple API credentials not configured")
+
+    apple_creds = json.loads(apple_row["credential_data"])
+    client = create_apple_client(apple_creds)
+    if not client:
+        raise HTTPException(status_code=500, detail="Failed to create Apple API client")
+
+    result = await client.list_apps()
+    if result.get("success"):
+        return {"apps": result["apps"]}
+    raise HTTPException(status_code=502, detail=result.get("error", "Failed to list apps"))
+
+
+@app.get("/api/apple/apps/{app_id}/status")
+async def get_apple_app_review_status(
+    app_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """Get review status for a specific Apple app."""
+    user_id = int(current_user["sub"])
+    cursor = await db.execute(
+        "SELECT credential_data FROM credentials WHERE user_id = ? AND credential_type = 'apple'",
+        (user_id,))
+    apple_row = await cursor.fetchone()
+    if not apple_row:
+        raise HTTPException(status_code=400, detail="Apple API credentials not configured")
+
+    apple_creds = json.loads(apple_row["credential_data"])
+    client = create_apple_client(apple_creds)
+    if not client:
+        raise HTTPException(status_code=500, detail="Failed to create Apple API client")
+
+    result = await client.get_review_status(app_id)
+    return result
+
+
 def compute_r_factor(run: dict) -> dict:
     """Compute Reality Factor for a pipeline run.
     Autonomous classification:
