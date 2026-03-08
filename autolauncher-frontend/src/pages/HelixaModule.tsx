@@ -269,56 +269,77 @@ function IdeaDetail({ idea, onDelete, onCreateApp }: { idea: HelixaIdea; onDelet
         <TabsContent value="valuation" className="mt-3">
           <Card className="bg-slate-800/50 border-slate-700">
             <CardContent className="p-4 space-y-4">
-              {idea.valuation?.summary && (
-                <div className="text-center p-4 bg-indigo-900/20 rounded-lg border border-indigo-800/30">
-                  <p className="text-xs text-indigo-400 uppercase font-semibold">Recommended Valuation</p>
-                  <p className="text-2xl font-bold text-white mt-1">{idea.valuation.summary.recommended_valuation || 'N/A'}</p>
-                  <p className="text-xs text-slate-400 mt-1">
-                    Range: {idea.valuation.summary.valuation_range_low} - {idea.valuation.summary.valuation_range_high}
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">
-                    Confidence: {idea.valuation.summary.confidence_level} | Stage: {idea.valuation.summary.stage_assessment}
-                  </p>
-                </div>
-              )}
-              {idea.valuation?.berkus_method && (
-                <div>
-                  <h4 className="text-xs font-semibold text-indigo-400 uppercase mb-2">Berkus Method</h4>
-                  {idea.valuation.berkus_method.factors?.map((f, i) => (
-                    <div key={i} className="flex justify-between text-xs py-1 border-b border-slate-700/50">
-                      <span className="text-slate-400">{f.factor}</span>
-                      <span className="text-white">${(f.value / 1000).toFixed(0)}K</span>
-                    </div>
-                  ))}
-                  <div className="flex justify-between text-sm font-bold mt-2 text-indigo-400">
-                    <span>Total</span>
-                    <span>{idea.valuation.berkus_method.total_valuation}</span>
+              {idea.valuation?.summary && (() => {
+                const s = idea.valuation.summary;
+                const recVal = String(s.recommended_valuation || (s.recommended ? `$${s.recommended}M` : 'N/A'));
+                const rangeLow = String(s.valuation_range_low || (s.range_low ? `$${s.range_low}M` : '-'));
+                const rangeHigh = String(s.valuation_range_high || (s.range_high ? `$${s.range_high}M` : '-'));
+                const conf = String(s.confidence_level || s.confidence || '-');
+                const stage = String(s.stage_assessment || s.stage || '-');
+                return (
+                  <div className="text-center p-4 bg-indigo-900/20 rounded-lg border border-indigo-800/30">
+                    <p className="text-xs text-indigo-400 uppercase font-semibold">Recommended Valuation</p>
+                    <p className="text-2xl font-bold text-white mt-1">{recVal}</p>
+                    <p className="text-xs text-slate-400 mt-1">Range: {rangeLow} - {rangeHigh}</p>
+                    <p className="text-xs text-slate-500 mt-1">Confidence: {conf} | Stage: {stage}</p>
                   </div>
-                </div>
-              )}
-              {idea.valuation?.unit_economics && (
-                <div>
-                  <h4 className="text-xs font-semibold text-indigo-400 uppercase mb-2">Unit Economics</h4>
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div className="bg-slate-900/50 p-2 rounded">
-                      <span className="text-slate-500">ARPU</span>
-                      <p className="text-white font-medium">${idea.valuation.unit_economics.arpu_monthly}/mo</p>
-                    </div>
-                    <div className="bg-slate-900/50 p-2 rounded">
-                      <span className="text-slate-500">CAC</span>
-                      <p className="text-white font-medium">${idea.valuation.unit_economics.cac}</p>
-                    </div>
-                    <div className="bg-slate-900/50 p-2 rounded">
-                      <span className="text-slate-500">LTV</span>
-                      <p className="text-white font-medium">${idea.valuation.unit_economics.ltv}</p>
-                    </div>
-                    <div className="bg-slate-900/50 p-2 rounded">
-                      <span className="text-slate-500">LTV/CAC</span>
-                      <p className="text-white font-medium">{idea.valuation.unit_economics.ltv_cac_ratio}x</p>
+                );
+              })()}
+              {idea.valuation?.berkus_method && (() => {
+                const bm = idea.valuation.berkus_method;
+                const factors = bm.factors as Array<{factor: string; value: number}> | undefined;
+                const total = String(bm.total_valuation || (bm.total ? `$${bm.total}M` : '-'));
+                return (
+                  <div>
+                    <h4 className="text-xs font-semibold text-indigo-400 uppercase mb-2">Berkus Method</h4>
+                    {factors ? factors.map((f, i) => (
+                      <div key={i} className="flex justify-between text-xs py-1 border-b border-slate-700/50">
+                        <span className="text-slate-400">{f.factor}</span>
+                        <span className="text-white">${(f.value / 1000).toFixed(0)}K</span>
+                      </div>
+                    )) : Object.entries(bm).filter(([k]) => k !== 'total' && k !== 'total_valuation').map(([k, v]) => (
+                      <div key={k} className="flex justify-between text-xs py-1 border-b border-slate-700/50">
+                        <span className="text-slate-400 capitalize">{k.replace(/_/g, ' ')}</span>
+                        <span className="text-white">${typeof v === 'number' ? (v >= 1000 ? `${(v/1000).toFixed(0)}K` : `${(v * 1000).toFixed(0)}K`) : String(v)}</span>
+                      </div>
+                    ))}
+                    <div className="flex justify-between text-sm font-bold mt-2 text-indigo-400">
+                      <span>Total</span>
+                      <span>{total}</span>
                     </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
+              {idea.valuation?.unit_economics && (() => {
+                const ue = idea.valuation.unit_economics;
+                const arpu = Number(ue.arpu_monthly || ue.ARPU || ue.arpu || 0);
+                const cac = Number(ue.cac || ue.CAC || 0);
+                const ltv = Number(ue.ltv || ue.LTV || 0);
+                const ltvCac = Number(ue.ltv_cac_ratio || ue.LTV_CAC_Ratio || ue.ltv_cac || 0);
+                return (
+                  <div>
+                    <h4 className="text-xs font-semibold text-indigo-400 uppercase mb-2">Unit Economics</h4>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="bg-slate-900/50 p-2 rounded">
+                        <span className="text-slate-500">ARPU</span>
+                        <p className="text-white font-medium">${arpu}/mo</p>
+                      </div>
+                      <div className="bg-slate-900/50 p-2 rounded">
+                        <span className="text-slate-500">CAC</span>
+                        <p className="text-white font-medium">${cac}</p>
+                      </div>
+                      <div className="bg-slate-900/50 p-2 rounded">
+                        <span className="text-slate-500">LTV</span>
+                        <p className="text-white font-medium">${ltv}</p>
+                      </div>
+                      <div className="bg-slate-900/50 p-2 rounded">
+                        <span className="text-slate-500">LTV/CAC</span>
+                        <p className="text-white font-medium">{ltvCac}x</p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
               {idea.valuation?.risk_factors && idea.valuation.risk_factors.length > 0 && (
                 <div>
                   <h4 className="text-xs font-semibold text-red-400 uppercase mb-1">Risk Factors</h4>

@@ -230,12 +230,12 @@ export interface HelixaIdea {
     };
   };
   valuation: {
-    summary?: { valuation_range_low: string; valuation_range_high: string; recommended_valuation: string; confidence_level: string; stage_assessment: string };
+    summary?: Record<string, unknown>;
     revenue_multiples?: { arpu_monthly: number; arpu_rationale: string; ev_revenue_multiple: number; multiple_rationale: string; growth_rate_assumption: string; scenarios: { scenario: string; year3_users: number; year3_arr: string; implied_valuation: string }[] };
     comparable_companies?: { comps: { name: string; description: string; valuation_or_multiple: string; relevance: string }[]; early_stage_discount: string; implied_range: string };
-    berkus_method?: { factors: { factor: string; value: number; rationale: string }[]; total_valuation: string };
+    berkus_method?: Record<string, unknown>;
     scorecard_method?: { base_valuation: string; adjustments: { factor: string; weight: number; comparison: number; rationale: string }[]; adjusted_valuation: string };
-    unit_economics?: { arpu_monthly: number; cac: number; ltv: number; ltv_cac_ratio: number; gross_margin_pct: number; cac_payback_months: number; unit_economics_verdict: string; notes: string };
+    unit_economics?: Record<string, unknown>;
     methodology_note?: string;
     risk_factors?: string[];
     upside_catalysts?: string[];
