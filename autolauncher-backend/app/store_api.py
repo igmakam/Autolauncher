@@ -220,7 +220,8 @@ class AppStoreConnectAPI:
             return {"success": False, "error": str(e)}
 
     async def update_version_localization(self, localization_id: str, listing_data: dict) -> dict:
-        """Update version localization (description, keywords, whatsNew, promotionalText)."""
+        """Update version localization (description, keywords, whatsNew, promotionalText).
+        Automatically retries without whatsNew if Apple rejects it (e.g. first version)."""
         try:
             attributes = {}
             if listing_data.get("description"):
@@ -244,9 +245,29 @@ class AppStoreConnectAPI:
             })
             if result["status"] == 200:
                 return {"success": True, "message": "Version localization updated"}
-            else:
-                error_detail = str(result.get("data", {}).get("errors", result.get("text", "")))[:300]
-                return {"success": False, "error": f"Update failed: {error_detail}"}
+
+            # Check if whatsNew caused the error — retry without it
+            errors = result.get("data", {}).get("errors", [])
+            whats_new_error = any("whatsNew" in str(e) for e in errors)
+            if whats_new_error and "whatsNew" in attributes:
+                logger.info("Retrying update_version_localization without whatsNew (not allowed for this version)")
+                attributes.pop("whatsNew")
+                if not attributes:
+                    return {"success": True, "message": "No fields to update (whatsNew skipped for first version)"}
+                retry_result = await self._request("PATCH", f"/appStoreVersionLocalizations/{localization_id}", json_data={
+                    "data": {
+                        "type": "appStoreVersionLocalizations",
+                        "id": localization_id,
+                        "attributes": attributes,
+                    }
+                })
+                if retry_result["status"] == 200:
+                    return {"success": True, "message": "Version localization updated (whatsNew skipped — first version)"}
+                error_detail = str(retry_result.get("data", {}).get("errors", retry_result.get("text", "")))[:300]
+                return {"success": False, "error": f"Update failed on retry: {error_detail}"}
+
+            error_detail = str(errors or result.get("text", ""))[:300]
+            return {"success": False, "error": f"Update failed: {error_detail}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -357,7 +378,17 @@ class AppStoreConnectAPI:
             if result["status"] in (200, 201):
                 return {"success": True, "message": "Submitted for review"}
             else:
-                error_detail = str(result.get("data", {}).get("errors", result.get("text", "")))[:500]
+                errors = result.get("data", {}).get("errors", [])
+                error_detail = str(errors)[:500]
+                # Detect common reasons for submit failure
+                is_forbidden = any(e.get("code") == "FORBIDDEN_ERROR" for e in errors if isinstance(e, dict))
+                if is_forbidden:
+                    return {
+                        "success": False,
+                        "error": "Cannot submit for review yet. Common reasons: missing binary (upload via Xcode/Transporter), missing screenshots, missing app icon, or missing privacy policy URL.",
+                        "raw_error": error_detail,
+                        "needs_binary": True,
+                    }
                 return {"success": False, "error": f"Submit failed: {error_detail}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
