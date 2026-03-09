@@ -5,10 +5,11 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
+import { toast } from '@/hooks/use-toast';
 import {
   ArrowLeft, Mic, MicOff, Send, Brain, Lightbulb, FlaskConical, Trash2,
   ChevronRight, Loader2, Check, X, MessageSquare, Rocket, BarChart3,
-  Zap, Target, DollarSign, Bot, Star, TrendingUp
+  Zap, Target, DollarSign, Bot, Star, TrendingUp, Search
 } from 'lucide-react';
 
 interface Props {
@@ -46,7 +47,11 @@ function VoiceRecorder({ onTranscript, onTextSubmit, autoSubmitVoice = true }: {
             setTextInput('');
           }
         } catch {
-          alert('Transcription failed. Try typing instead.');
+          toast({
+            title: 'Transcription failed',
+            description: 'Try typing your idea instead.',
+            variant: 'destructive',
+          });
         } finally {
           setTranscribing(false);
         }
@@ -55,7 +60,11 @@ function VoiceRecorder({ onTranscript, onTextSubmit, autoSubmitVoice = true }: {
       mediaRecorder.current = recorder;
       setRecording(true);
     } catch {
-      alert('Microphone access denied. Please type your idea instead.');
+      toast({
+        title: 'Microphone access denied',
+        description: 'Please type your idea instead.',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -109,7 +118,10 @@ function VoiceRecorder({ onTranscript, onTextSubmit, autoSubmitVoice = true }: {
 
 // ============ IDEA LIST ============
 
-function IdeaList({ ideas, selectedId, onSelect }: { ideas: HelixaIdeaSummary[]; selectedId: number | null; onSelect: (id: number) => void }) {
+function IdeaList({ ideas, selectedId, onSelect, searchQuery, onSearchChange }: { ideas: HelixaIdeaSummary[]; selectedId: number | null; onSelect: (id: number) => void; searchQuery?: string; onSearchChange?: (q: string) => void }) {
+  const filteredIdeas = searchQuery
+    ? ideas.filter(i => i.idea_name.toLowerCase().includes(searchQuery.toLowerCase()) || i.product_type.toLowerCase().includes(searchQuery.toLowerCase()))
+    : ideas;
   const scoreColor = (s: number) => s >= 8 ? 'text-green-400' : s >= 6 ? 'text-yellow-400' : 'text-red-400';
   const typeBadge = (t: string) => {
     const colors: Record<string, string> = {
@@ -120,42 +132,59 @@ function IdeaList({ ideas, selectedId, onSelect }: { ideas: HelixaIdeaSummary[];
     return colors[t] || colors.Other;
   };
 
-  if (ideas.length === 0) {
-    return (
-      <div className="text-center py-8 text-slate-500">
-        <Brain className="w-12 h-12 mx-auto mb-3 opacity-50" />
-        <p>No ideas yet. Capture your first idea above!</p>
-      </div>
-    );
-  }
-
   return (
-    <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
-      {ideas.map(idea => (
-        <div
-          key={idea.id}
-          onClick={() => onSelect(idea.id)}
-          className={`p-3 rounded-lg cursor-pointer transition-all border ${
-            selectedId === idea.id
-              ? 'bg-indigo-900/30 border-indigo-500'
-              : 'bg-slate-800/30 border-slate-700 hover:border-slate-600'
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <div className="flex-1 min-w-0">
-              <h4 className="text-white font-medium text-sm truncate">{idea.idea_name}</h4>
-              <div className="flex items-center gap-2 mt-1">
-                <Badge className={`${typeBadge(idea.product_type)} text-xs px-1.5 py-0`}>{idea.product_type}</Badge>
-                <span className="text-xs text-slate-500">{new Date(idea.created_at).toLocaleDateString()}</span>
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider shrink-0">
+          Ideas ({ideas.length})
+        </h3>
+        {ideas.length > 3 && onSearchChange && (
+          <div className="relative flex-1 max-w-52">
+            <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-500" />
+            <Input
+              value={searchQuery || ''}
+              onChange={e => onSearchChange(e.target.value)}
+              placeholder="Search..."
+              className="pl-7 h-7 bg-slate-800/50 border-slate-700 text-white text-xs"
+            />
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+        {filteredIdeas.length === 0 ? (
+          <div className="text-center py-8 text-slate-500">
+            <Brain className="w-12 h-12 mx-auto mb-3 opacity-50" />
+            <p>{searchQuery ? 'No matching ideas.' : 'No ideas yet. Capture your first idea above!'}</p>
+          </div>
+        ) : (
+          filteredIdeas.map(idea => (
+            <div
+              key={idea.id}
+              onClick={() => onSelect(idea.id)}
+              className={`p-3 rounded-lg cursor-pointer transition-all border ${
+                selectedId === idea.id
+                  ? 'bg-indigo-900/30 border-indigo-500'
+                  : 'bg-slate-800/30 border-slate-700 hover:border-slate-600'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex-1 min-w-0">
+                  <h4 className="text-white font-medium text-sm truncate">{idea.idea_name}</h4>
+                  <div className="flex items-center gap-2 mt-1">
+                    <Badge className={`${typeBadge(idea.product_type)} text-xs px-1.5 py-0`}>{idea.product_type}</Badge>
+                    <span className="text-xs text-slate-500">{new Date(idea.created_at).toLocaleDateString()}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`text-lg font-bold ${scoreColor(idea.overall_score)}`}>{idea.overall_score}</span>
+                  <ChevronRight className="w-4 h-4 text-slate-500" />
+                </div>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className={`text-lg font-bold ${scoreColor(idea.overall_score)}`}>{idea.overall_score}</span>
-              <ChevronRight className="w-4 h-4 text-slate-500" />
-            </div>
-          </div>
-        </div>
-      ))}
+          ))
+        )}
+      </div>
     </div>
   );
 }
@@ -782,17 +811,43 @@ export default function HelixaModule({ onBack, onBuildApp }: Props) {
       setSelectedIdeaId(result.id);
     } catch (e) {
       console.error(e);
-      alert('Failed to process idea. Please try again.');
+      toast({ title: 'Failed to process idea', description: 'Please try again.', variant: 'destructive' });
     } finally {
       setProcessing(false);
     }
   };
 
+  type DeleteTarget = { kind: 'idea' | 'synth' | 'exp'; id: number };
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
+  const [ideaSearchQuery, setIdeaSearchQuery] = useState('');
+
   const deleteIdea = async (id: number) => {
-    if (!confirm('Delete this idea?')) return;
     await api.helixa.ideas.delete(id);
+    toast({ title: 'Idea deleted' });
     if (selectedIdeaId === id) { setSelectedIdea(null); setSelectedIdeaId(null); }
     await loadIdeas();
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || deleteBusy) return;
+    setDeleteBusy(true);
+    try {
+      if (deleteTarget.kind === 'idea') {
+        await deleteIdea(deleteTarget.id);
+      } else if (deleteTarget.kind === 'synth') {
+        await deleteSynth(deleteTarget.id);
+      } else {
+        await deleteExp(deleteTarget.id);
+      }
+    } catch (e) {
+      console.error(e);
+      toast({ title: 'Delete failed', description: 'Please try again.', variant: 'destructive' });
+    } finally {
+      setDeleteBusy(false);
+      setDeleteTarget(null);
+    }
   };
 
   const createAppFromIdea = (id: number) => {
@@ -808,7 +863,7 @@ export default function HelixaModule({ onBack, onBuildApp }: Props) {
       await loadSynthesized();
     } catch (e) {
       console.error(e);
-      alert('Synthesis failed. Need at least 2 ideas.');
+      toast({ title: 'Synthesis failed', description: 'Need at least 2 ideas.', variant: 'destructive' });
     } finally {
       setSynthGenerating(false);
     }
@@ -820,8 +875,8 @@ export default function HelixaModule({ onBack, onBuildApp }: Props) {
   };
 
   const deleteSynth = async (id: number) => {
-    if (!confirm('Delete this synthesized idea?')) return;
     await api.helixa.synthesized.delete(id);
+    toast({ title: 'Synthesized idea deleted' });
     await loadSynthesized();
   };
 
@@ -832,7 +887,7 @@ export default function HelixaModule({ onBack, onBuildApp }: Props) {
       await loadExperimental();
     } catch (e) {
       console.error(e);
-      alert('Experimental generation failed.');
+      toast({ title: 'Generation failed', description: 'Please try again.', variant: 'destructive' });
     } finally {
       setExpGenerating(false);
     }
@@ -844,8 +899,8 @@ export default function HelixaModule({ onBack, onBuildApp }: Props) {
   };
 
   const deleteExp = async (id: number) => {
-    if (!confirm('Delete this experimental idea?')) return;
     await api.helixa.experimental.delete(id);
+    toast({ title: 'Experimental idea deleted' });
     await loadExperimental();
   };
 
@@ -880,11 +935,12 @@ export default function HelixaModule({ onBack, onBuildApp }: Props) {
             </div>
           </div>
           <div className="flex items-center gap-2 text-xs text-slate-500">
-            <span>{ideas.length} ideas</span>
-            <span>|</span>
-            <span>{synthesized.length} synthesized</span>
-            <span>|</span>
-            <span>{experimental.length} experimental</span>
+            <span className="hidden sm:inline">{ideas.length} ideas</span>
+            <span className="hidden sm:inline">|</span>
+            <span className="hidden sm:inline">{synthesized.length} synth</span>
+            <span className="hidden sm:inline">|</span>
+            <span className="hidden sm:inline">{experimental.length} exp</span>
+            <span className="sm:hidden">{ideas.length + synthesized.length + experimental.length} total</span>
           </div>
         </div>
       </header>
@@ -909,7 +965,7 @@ export default function HelixaModule({ onBack, onBuildApp }: Props) {
               <div className="md:hidden">
                 <IdeaDetail
                   idea={selectedIdea}
-                  onDelete={() => { deleteIdea(selectedIdea.id); setSelectedIdea(null); setSelectedIdeaId(null); }}
+                  onDelete={() => setDeleteTarget({ kind: 'idea', id: selectedIdea.id })}
                   onCreateApp={() => createAppFromIdea(selectedIdea.id)}
                   onBack={() => { setSelectedIdea(null); setSelectedIdeaId(null); }}
                 />
@@ -931,7 +987,7 @@ export default function HelixaModule({ onBack, onBuildApp }: Props) {
                     </CardContent>
                   </Card>
                 )}
-                <IdeaList ideas={ideas} selectedId={selectedIdeaId} onSelect={selectIdea} />
+                <IdeaList ideas={ideas} selectedId={selectedIdeaId} onSelect={selectIdea} searchQuery={ideaSearchQuery} onSearchChange={setIdeaSearchQuery} />
               </div>
             )}
 
@@ -954,7 +1010,7 @@ export default function HelixaModule({ onBack, onBuildApp }: Props) {
                     </CardContent>
                   </Card>
                 )}
-                <IdeaList ideas={ideas} selectedId={selectedIdeaId} onSelect={selectIdea} />
+                <IdeaList ideas={ideas} selectedId={selectedIdeaId} onSelect={selectIdea} searchQuery={ideaSearchQuery} onSearchChange={setIdeaSearchQuery} />
               </div>
 
               {/* Right panel - detail */}
@@ -962,7 +1018,7 @@ export default function HelixaModule({ onBack, onBuildApp }: Props) {
                 {selectedIdea ? (
                   <IdeaDetail
                     idea={selectedIdea}
-                    onDelete={() => deleteIdea(selectedIdea.id)}
+                    onDelete={() => setDeleteTarget({ kind: 'idea', id: selectedIdea.id })}
                     onCreateApp={() => createAppFromIdea(selectedIdea.id)}
                   />
                 ) : (
@@ -985,7 +1041,7 @@ export default function HelixaModule({ onBack, onBuildApp }: Props) {
               items={synthesized}
               onGenerate={generateSynthesis}
               onFeedback={synthFeedback}
-              onDelete={deleteSynth}
+              onDelete={(id) => setDeleteTarget({ kind: 'synth', id })}
               generating={synthGenerating}
             />
           </TabsContent>
@@ -996,12 +1052,36 @@ export default function HelixaModule({ onBack, onBuildApp }: Props) {
               stats={expStats}
               onGenerate={generateExperimental}
               onFeedback={expFeedback}
-              onDelete={deleteExp}
+              onDelete={(id) => setDeleteTarget({ kind: 'exp', id })}
               generating={expGenerating}
             />
           </TabsContent>
         </Tabs>
       </main>
+
+      {/* Delete confirmation dialog */}
+      {deleteTarget && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-sm w-full shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-white">Delete item</h3>
+              <button onClick={() => setDeleteTarget(null)} className="text-slate-400 hover:text-white" disabled={deleteBusy}>
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-sm text-slate-400 mb-4">This action cannot be undone.</p>
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1 border-slate-700 text-slate-300" onClick={() => setDeleteTarget(null)} disabled={deleteBusy}>
+                Cancel
+              </Button>
+              <Button className="flex-1 bg-red-600 hover:bg-red-700 text-white" onClick={confirmDelete} disabled={deleteBusy}>
+                {deleteBusy ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Trash2 className="w-4 h-4 mr-1" />}
+                Delete
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

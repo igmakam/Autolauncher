@@ -132,7 +132,7 @@ export default function ProjectFlow({ projectId, onBack }: Props) {
       } else {
         setStep('questionnaire');
       }
-    } catch (err) {
+    } catch {
       setError('Failed to load project');
     }
   };

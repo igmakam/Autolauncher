@@ -5,7 +5,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
-import { Rocket, Settings, Plus, LogOut, BarChart3, Zap, Globe, Shield, Brain, Code2, Trash2, X, Loader2 } from 'lucide-react';
+import { toast } from '@/hooks/use-toast';
+import {
+  Rocket, Settings, Plus, LogOut, BarChart3, Zap, Globe, Shield, Brain, Code2, Trash2, X, Loader2,
+  LayoutDashboard, Search
+} from 'lucide-react';
 import SetupWizard from './SetupWizard';
 import ProjectFlow from './ProjectFlow';
 import HelixaModule from './HelixaModule';
@@ -26,6 +30,7 @@ export default function Dashboard() {
   const [deletePassword, setDeletePassword] = useState('');
   const [deleteError, setDeleteError] = useState('');
   const [deleting, setDeleting] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const loadData = async () => {
     try {
@@ -39,6 +44,7 @@ export default function Dashboard() {
       setCredStatus(c);
     } catch (err) {
       console.error(err);
+      toast({ title: 'Failed to load data', description: 'Check your connection.', variant: 'destructive' });
     } finally {
       setLoading(false);
     }
@@ -62,6 +68,7 @@ export default function Dashboard() {
       await api.projects.delete(deleteProjectId, deletePassword);
       setDeleteProjectId(null);
       setDeletePassword('');
+      toast({ title: 'Project deleted' });
       await loadData();
     } catch (err) {
       setDeleteError(err instanceof Error ? err.message : 'Failed to delete');
@@ -86,6 +93,10 @@ export default function Dashboard() {
     return map[status] || status;
   };
 
+  const filteredProjects = projects.filter(p =>
+    !searchQuery || p.name.toLowerCase().includes(searchQuery.toLowerCase()) || (p.bundle_id && p.bundle_id.toLowerCase().includes(searchQuery.toLowerCase()))
+  );
+
   if (view === 'setup') {
     return <SetupWizard onBack={() => { setView('dashboard'); loadData(); }} />;
   }
@@ -104,16 +115,26 @@ export default function Dashboard() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-950 via-blue-950 to-slate-950">
-        <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+      <div className="min-h-screen bg-gradient-to-br from-slate-950 via-blue-950 to-slate-950">
+        <div className="w-full max-w-7xl mx-auto px-4 py-8 space-y-6 animate-pulse">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3"><div className="w-8 h-8 bg-slate-800 rounded-lg" /><div className="h-6 w-32 bg-slate-800 rounded" /></div>
+            <div className="h-8 w-20 bg-slate-800 rounded" />
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {[1,2,3,4].map(i => <div key={i} className="h-20 bg-slate-800/50 rounded-xl" />)}
+          </div>
+          <div className="grid md:grid-cols-2 gap-4"><div className="h-20 bg-slate-800/30 rounded-xl" /><div className="h-20 bg-slate-800/30 rounded-xl" /></div>
+          <div className="h-32 bg-slate-800/30 rounded-xl" />
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-blue-950 to-slate-950">
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-blue-950 to-slate-950 pb-20 md:pb-0">
       {/* Header */}
-      <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-sm">
+      <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-sm sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <img src="/logo.png" alt="Auto Launch" className="h-8 w-8" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
@@ -128,9 +149,9 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 py-8">
+      <main className="max-w-7xl mx-auto px-4 py-6 md:py-8">
         {/* Stats Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-6 md:mb-8">
           <Card className="bg-slate-900/50 border-slate-800">
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
@@ -177,8 +198,8 @@ export default function Dashboard() {
           </Card>
         </div>
 
-        {/* HELIXA + Planter Modules */}
-        <div className="grid md:grid-cols-2 gap-4 mb-8">
+        {/* HELIXA + Planter Modules - hidden on mobile (accessed via bottom nav) */}
+        <div className="hidden md:grid md:grid-cols-2 gap-4 mb-8">
           <Card className="bg-indigo-900/20 border-indigo-800/30 cursor-pointer hover:border-indigo-600 transition-colors" onClick={() => setView('helixa')}>
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
@@ -250,11 +271,19 @@ export default function Dashboard() {
         </Card>
 
         {/* Projects */}
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-white">Your Projects</h2>
-          <Button onClick={() => { setSelectedProjectId(null); setView('project'); }} className="bg-blue-600 hover:bg-blue-700">
-            <Plus className="w-4 h-4 mr-1" /> New App Launch
-          </Button>
+        <div className="flex items-center justify-between mb-4 gap-3">
+          <h2 className="text-lg font-semibold text-white shrink-0">Projects</h2>
+          <div className="flex items-center gap-2 flex-1 justify-end">
+            {projects.length > 3 && (
+              <div className="relative hidden sm:block">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                <Input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search..." className="pl-8 h-8 w-40 bg-slate-800/50 border-slate-700 text-white text-xs" />
+              </div>
+            )}
+            <Button onClick={() => { setSelectedProjectId(null); setView('project'); }} size="sm" className="bg-blue-600 hover:bg-blue-700">
+              <Plus className="w-4 h-4 mr-1" /> <span className="hidden sm:inline">New App</span><span className="sm:hidden">New</span>
+            </Button>
+          </div>
         </div>
 
         {projects.length === 0 ? (
@@ -274,8 +303,8 @@ export default function Dashboard() {
             </CardContent>
           </Card>
         ) : (
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {projects.map(p => (
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
+            {filteredProjects.map(p => (
               <Card key={p.id} className="bg-slate-900/50 border-slate-800 hover:border-slate-700 cursor-pointer transition-colors" onClick={() => openProject(p.id)}>
                 <CardContent className="p-4">
                   <div className="flex items-start justify-between mb-3">
@@ -311,6 +340,29 @@ export default function Dashboard() {
           </div>
         )}
       </main>
+
+      {/* Mobile Bottom Tab Navigation */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-slate-900/95 backdrop-blur-lg border-t border-slate-800 z-50">
+        <div className="flex items-center justify-around py-2 px-2">
+          {[
+            { key: 'dashboard' as View, icon: LayoutDashboard, label: 'Home' },
+            { key: 'helixa' as View, icon: Brain, label: 'HELIXA' },
+            { key: 'planter' as View, icon: Code2, label: 'Planter' },
+            { key: 'setup' as View, icon: Settings, label: 'Setup' },
+          ].map(tab => {
+            const isActive = view === tab.key;
+            return (
+              <button key={tab.key} onClick={() => setView(tab.key)}
+                className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-lg transition-colors min-w-[60px] ${
+                  isActive ? 'text-blue-400 bg-blue-500/10' : 'text-slate-500 hover:text-slate-300'
+                }`}>
+                <tab.icon className={`w-5 h-5 ${isActive ? 'text-blue-400' : ''}`} />
+                <span className="text-[10px] font-medium">{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
 
       {/* Delete confirmation dialog */}
       {deleteProjectId !== null && (
