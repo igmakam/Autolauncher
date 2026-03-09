@@ -180,19 +180,24 @@ function ScoreBar({ label, value, max = 10 }: { label: string; value: number; ma
 
 // ============ IDEA DETAIL ============
 
-function IdeaDetail({ idea, onDelete, onCreateApp }: { idea: HelixaIdea; onDelete: () => void; onCreateApp: () => void }) {
+function IdeaDetail({ idea, onDelete, onCreateApp, onBack }: { idea: HelixaIdea; onDelete: () => void; onCreateApp: () => void; onBack?: () => void }) {
   const [detailTab, setDetailTab] = useState('concept');
 
   return (
     <div className="space-y-4">
+      {onBack && (
+        <Button onClick={onBack} size="sm" variant="ghost" className="text-slate-400 hover:text-white md:hidden">
+          <ArrowLeft className="w-4 h-4 mr-1" /> Back to Ideas
+        </Button>
+      )}
       <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-xl font-bold text-white">{idea.idea_name}</h3>
+        <div className="flex-1 min-w-0">
+          <h3 className="text-xl font-bold text-white truncate">{idea.idea_name}</h3>
           <p className="text-sm text-slate-400">{idea.product_type} | Score: <span className="text-indigo-400 font-bold">{idea.overall_score}</span></p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-shrink-0">
           <Button onClick={onCreateApp} size="sm" className="bg-green-600 hover:bg-green-700">
-            <Rocket className="w-4 h-4 mr-1" /> Create App
+            <Rocket className="w-4 h-4 mr-1" /> <span className="hidden sm:inline">Create App</span>
           </Button>
           <Button onClick={onDelete} size="sm" variant="ghost" className="text-red-400 hover:text-red-300">
             <Trash2 className="w-4 h-4" />
@@ -899,7 +904,39 @@ export default function HelixaModule({ onBack, onBuildApp }: Props) {
           </TabsList>
 
           <TabsContent value="ideas">
-            <div className="grid md:grid-cols-5 gap-6">
+            {/* Mobile: show either list OR detail, not both */}
+            {selectedIdea ? (
+              <div className="md:hidden">
+                <IdeaDetail
+                  idea={selectedIdea}
+                  onDelete={() => { deleteIdea(selectedIdea.id); setSelectedIdea(null); setSelectedIdeaId(null); }}
+                  onCreateApp={() => createAppFromIdea(selectedIdea.id)}
+                  onBack={() => { setSelectedIdea(null); setSelectedIdeaId(null); }}
+                />
+              </div>
+            ) : (
+              <div className="md:hidden space-y-4">
+                <VoiceRecorder
+                  onTranscript={() => {}}
+                  onTextSubmit={processIdea}
+                />
+                {processing && (
+                  <Card className="bg-indigo-900/20 border-indigo-800/30">
+                    <CardContent className="p-4 flex items-center gap-3">
+                      <Loader2 className="w-5 h-5 text-indigo-400 animate-spin" />
+                      <div>
+                        <p className="text-sm text-white">Processing idea...</p>
+                        <p className="text-xs text-slate-400">5-step AI pipeline</p>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+                <IdeaList ideas={ideas} selectedId={selectedIdeaId} onSelect={selectIdea} />
+              </div>
+            )}
+
+            {/* Desktop: side-by-side layout */}
+            <div className="hidden md:grid md:grid-cols-5 gap-6">
               {/* Left panel - capture + list */}
               <div className="md:col-span-2 space-y-4">
                 <VoiceRecorder
