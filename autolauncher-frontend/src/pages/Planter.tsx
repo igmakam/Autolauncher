@@ -302,31 +302,31 @@ export default function Planter({ onBack, initialIdeaId }: Props) {
     return (
       <div className="h-screen flex flex-col bg-slate-950">
         <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-sm shrink-0">
-          <div className="px-4 py-2 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Button variant="ghost" size="sm" onClick={() => { setViewMode('select'); setActiveSession(null); if (pollInterval) { clearInterval(pollInterval); setPollInterval(null); } }} className="text-slate-400 hover:text-white">
+          <div className="px-4 py-2 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <Button variant="ghost" size="sm" onClick={() => { setViewMode('select'); setActiveSession(null); if (pollInterval) { clearInterval(pollInterval); setPollInterval(null); } }} className="text-slate-400 hover:text-white flex-shrink-0">
                 <ArrowLeft className="w-4 h-4" />
               </Button>
-              <div className="flex items-center gap-2">
-                <div className="w-7 h-7 bg-emerald-600 rounded-lg flex items-center justify-center">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-7 h-7 bg-emerald-600 rounded-lg flex items-center justify-center flex-shrink-0">
                   <Code2 className="w-4 h-4 text-white" />
                 </div>
-                <div>
-                  <h1 className="text-sm font-bold text-white">{buildingIdeaName}</h1>
+                <div className="min-w-0">
+                  <h1 className="text-sm font-bold text-white truncate">{buildingIdeaName}</h1>
                   <p className="text-xs text-emerald-400">Planter Builder</p>
                 </div>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5 flex-shrink-0">
               {activeSession && getStatusBadge(activeSession.status)}
               {activeSession?.session_url && (
-                <Button size="sm" variant="outline" className="border-emerald-700 text-emerald-400 text-xs"
+                <Button size="sm" variant="outline" className="border-emerald-700 text-emerald-400 text-xs hidden sm:flex"
                   onClick={() => window.open(activeSession.session_url, '_blank')}>
                   <ExternalLink className="w-3 h-3 mr-1" /> Devin Session
                 </Button>
               )}
               {activeSession?.pr_url && (
-                <Button size="sm" variant="outline" className="border-blue-700 text-blue-400 text-xs"
+                <Button size="sm" variant="outline" className="border-blue-700 text-blue-400 text-xs hidden sm:flex"
                   onClick={() => window.open(activeSession.pr_url, '_blank')}>
                   <GitPullRequest className="w-3 h-3 mr-1" /> PR
                 </Button>
@@ -335,9 +335,9 @@ export default function Planter({ onBack, initialIdeaId }: Props) {
           </div>
         </header>
 
-        <div className="flex-1 flex overflow-hidden">
-          {/* Left Panel - Session Info */}
-          <div className="w-1/2 border-r border-slate-800 flex flex-col">
+        <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+          {/* Left Panel - Session Info (full width on mobile) */}
+          <div className="w-full md:w-1/2 md:border-r border-slate-800 flex flex-col">
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
               {creating && (
                 <div className="flex items-center gap-3 p-4 bg-emerald-900/20 border border-emerald-700/30 rounded-lg">
@@ -442,6 +442,28 @@ export default function Planter({ onBack, initialIdeaId }: Props) {
                       Auto-refreshing status every 10s
                     </div>
                   )}
+
+                  {/* Mobile-only: prominent session link since iframe is hidden */}
+                  {activeSession.session_url && (
+                    <div className="md:hidden space-y-2">
+                      <Button className="w-full bg-emerald-600 hover:bg-emerald-700 text-white"
+                        onClick={() => window.open(activeSession.session_url, '_blank')}>
+                        <Eye className="w-4 h-4 mr-2" /> Watch Devin Build Live
+                      </Button>
+                      {activeSession.pr_url && (
+                        <Button variant="outline" className="w-full border-blue-700 text-blue-400"
+                          onClick={() => window.open(activeSession.pr_url, '_blank')}>
+                          <GitPullRequest className="w-4 h-4 mr-2" /> View Pull Request
+                        </Button>
+                      )}
+                      {activeSession.frontend_url && (
+                        <Button variant="outline" className="w-full border-green-700 text-green-400"
+                          onClick={() => window.open(activeSession.frontend_url, '_blank')}>
+                          <Globe className="w-4 h-4 mr-2" /> Open Live App
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
               <div ref={messagesEndRef} />
@@ -466,8 +488,8 @@ export default function Planter({ onBack, initialIdeaId }: Props) {
             )}
           </div>
 
-          {/* Right Panel - Devin Session Embed */}
-          <div className="w-1/2 flex flex-col">
+          {/* Right Panel - Devin Session Embed (hidden on mobile) */}
+          <div className="hidden md:flex md:w-1/2 flex-col">
             <div className="border-b border-slate-800 px-3 py-1.5 flex items-center gap-2">
               <div className="flex items-center gap-1 px-3 py-1 rounded text-xs bg-emerald-600/20 text-emerald-400">
                 <Eye className="w-3 h-3" /> Live Session

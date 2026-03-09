@@ -119,8 +119,8 @@ export default function Dashboard() {
             <img src="/logo.png" alt="Auto Launch" className="h-8 w-8" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
             <h1 className="text-xl font-bold text-white">Auto Launch</h1>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-slate-400">{user?.email}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-slate-400 hidden sm:inline truncate max-w-48">{user?.email}</span>
             <Button variant="ghost" size="sm" onClick={logout} className="text-slate-400 hover:text-white">
               <LogOut className="w-4 h-4" />
             </Button>
