@@ -61,8 +61,9 @@ ALLOWED_ORIGINS = [
     # Development
     "http://localhost:5173",
     "http://localhost:3000",
-    # Production – update when frontend is deployed
+    # Production
     "https://autolauncher.vercel.app",
+    "https://launch-readiness-audit-app-chlckr3f.devinapps.com",
 ]
 
 app.add_middleware(
