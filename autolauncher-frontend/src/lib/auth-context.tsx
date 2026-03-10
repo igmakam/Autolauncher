@@ -12,13 +12,36 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
+function getGuestTokenFromUrl(): string | null {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('guest');
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    if (token) {
+    const guestToken = getGuestTokenFromUrl();
+
+    if (guestToken) {
+      // Guest access — exchange guest token for a real session
+      api.auth.guestAccess(guestToken)
+        .then((res) => {
+          localStorage.setItem('token', res.access_token);
+          setToken(res.access_token);
+          setUser(res.user);
+          // Remove ?guest= from URL without reload
+          const url = new URL(window.location.href);
+          url.searchParams.delete('guest');
+          window.history.replaceState({}, '', url.pathname + url.search);
+        })
+        .catch(() => {
+          // Guest token invalid/expired — fall through to normal login
+        })
+        .finally(() => setIsLoading(false));
+    } else if (token) {
       api.auth.me()
         .then(setUser)
         .catch(() => {
@@ -29,7 +52,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } else {
       setIsLoading(false);
     }
-  }, [token]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const login = async (email: string, password: string) => {
     const res = await api.auth.login(email, password);

@@ -352,6 +352,8 @@ export const api = {
     login: (email: string, password: string) =>
       request<AuthResponse>('/api/auth/login', { method: 'POST', body: { email, password } }),
     me: () => request<User>('/api/auth/me'),
+    guestAccess: (guest_token: string) =>
+      request<AuthResponse>('/api/auth/guest-access', { method: 'POST', body: { guest_token } }),
   },
   credentials: {
     status: () => request<CredentialStatus[]>('/api/credentials/status'),

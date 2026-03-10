@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.database import get_db, init_db, DATABASE_PATH
-from app.auth import hash_password, verify_password, create_access_token, get_current_user
+from app.auth import hash_password, verify_password, create_access_token, get_current_user, create_guest_token, decode_guest_token, GUEST_LINK_EXPIRE_HOURS
 from app.models import (
     UserRegister, UserLogin, TokenResponse, UserResponse,
     CredentialSave, CredentialStatus,
@@ -59,6 +59,58 @@ async def healthz():
     return {"status": "ok"}
 
 # ==================== AUTH ====================
+
+
+@app.post("/api/auth/guest-link")
+async def generate_guest_link(
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """Generate a guest access link valid for 48 hours. Requires auth (owner only)."""
+    user_id = int(current_user["sub"])
+    email = current_user["email"]
+    guest_token = create_guest_token(user_id, email)
+    return {
+        "guest_token": guest_token,
+        "expires_in_hours": GUEST_LINK_EXPIRE_HOURS,
+    }
+
+
+@app.post("/api/auth/guest-access")
+async def guest_access(
+    body: dict,
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """Exchange a guest token for a real access token (no login needed)."""
+    guest_token = body.get("guest_token", "")
+    if not guest_token:
+        raise HTTPException(status_code=400, detail="guest_token required")
+
+    payload = decode_guest_token(guest_token)
+    user_id = int(payload["sub"])
+    email = payload["email"]
+
+    # Verify the user still exists
+    cursor = await db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    user = dict(row)
+
+    # Issue a normal access token (24h)
+    access_token = create_access_token(user_id, email)
+
+    return TokenResponse(
+        access_token=access_token,
+        user=UserResponse(
+            id=user["id"],
+            email=user["email"],
+            full_name=user["full_name"] or "",
+            avatar_url=user["avatar_url"] or "",
+            created_at=user["created_at"] or ""
+        )
+    )
+
 
 @app.post("/api/auth/register", response_model=TokenResponse)
 async def register(user: UserRegister, db: aiosqlite.Connection = Depends(get_db)):
