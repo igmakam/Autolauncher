@@ -66,14 +66,6 @@ ALLOWED_ORIGINS = [
     "https://launch-readiness-audit-app-chlckr3f.devinapps.com",
 ]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 
 # ---------------------------------------------------------------------------
 # Security: Rate Limiting – 120 requests / minute per IP
@@ -88,6 +80,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._hits: dict[str, list[float]] = defaultdict(list)
 
     async def dispatch(self, request: Request, call_next):
+        # Skip rate limiting for CORS preflight requests
+        if request.method == "OPTIONS":
+            return await call_next(request)
         client_ip = request.client.host if request.client else "unknown"
         now = time.time()
         # Prune old entries and evict stale IPs to prevent unbounded memory growth
@@ -127,6 +122,17 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(SecurityHeadersMiddleware)
+
+# CORS must be added LAST so it is the outermost middleware (Starlette
+# processes in reverse add-order).  This ensures that ALL responses —
+# including 429 from the rate limiter — carry the proper CORS headers.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/")
 async def root():
