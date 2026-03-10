@@ -26,19 +26,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const guestToken = getGuestTokenFromUrl();
 
     if (guestToken) {
-      // Guest access — exchange guest token for a real session
-      api.auth.guestAccess(guestToken)
-        .then((res) => {
-          localStorage.setItem('token', res.access_token);
-          setToken(res.access_token);
-          setUser(res.user);
+      // Guest access — store the token directly and validate via /me
+      localStorage.setItem('token', guestToken);
+      setToken(guestToken);
+      api.auth.me()
+        .then((u) => {
+          setUser(u);
           // Remove ?guest= from URL without reload
           const url = new URL(window.location.href);
           url.searchParams.delete('guest');
           window.history.replaceState({}, '', url.pathname + url.search);
         })
         .catch(() => {
-          // Guest token invalid/expired — fall through to normal login
+          localStorage.removeItem('token');
+          setToken(null);
         })
         .finally(() => setIsLoading(false));
     } else if (token) {
