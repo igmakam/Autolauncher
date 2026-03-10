@@ -443,21 +443,39 @@ export default function ProjectFlow({ projectId, onBack }: Props) {
     );
   };
 
-  const renderGenerating = () => (
-    <div className="max-w-lg mx-auto text-center py-16">
-      <div className="w-20 h-20 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-6" />
-      <h2 className="text-2xl font-bold text-white mb-2">AI Agents Working...</h2>
-      <p className="text-slate-400 mb-8">6 specialized AI agents are generating your optimized store listing & strategy</p>
-      <div className="space-y-3 text-left">
-        {['ASO Keyword Research Agent', 'Copywriting Agent', 'Viral Growth Hacker Agent', 'Competitor Analysis Agent', 'Launch Strategy Agent', 'Monetization & Metrics Agent'].map((agent, i) => (
-          <div key={i} className="flex items-center gap-3 p-3 rounded-lg bg-slate-800/50">
-            <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
-            <span className="text-sm text-slate-300">{agent}</span>
+  const renderGenerating = () => {
+    const agents = [
+      { name: 'ASO Keyword Research Agent', time: '~30s' },
+      { name: 'Copywriting Agent', time: '~45s' },
+      { name: 'Viral Growth Hacker Agent', time: '~30s' },
+      { name: 'Competitor Analysis Agent', time: '~40s' },
+      { name: 'Launch Strategy Agent', time: '~35s' },
+      { name: 'Monetization & Metrics Agent', time: '~25s' },
+    ];
+    return (
+      <div className="max-w-lg mx-auto text-center py-16">
+        <div className="w-20 h-20 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-6" />
+        <h2 className="text-2xl font-bold text-white mb-2">AI Agents Working...</h2>
+        <p className="text-slate-400 mb-4">6 specialized AI agents are generating your optimized store listing & strategy</p>
+        <div className="mb-6">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs text-slate-500">Estimated time: ~3 minutes</span>
+            <span className="text-xs text-blue-400">Processing...</span>
           </div>
-        ))}
+          <Progress value={35} className="h-2" />
+        </div>
+        <div className="space-y-3 text-left">
+          {agents.map((agent, i) => (
+            <div key={i} className="flex items-center gap-3 p-3 rounded-lg bg-slate-800/50">
+              <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
+              <span className="text-sm text-slate-300 flex-1">{agent.name}</span>
+              <span className="text-xs text-slate-500">{agent.time}</span>
+            </div>
+          ))}
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderReview = () => {
     const iosListing = listings.find(l => l.platform === 'ios' && l.locale === 'en-US');
@@ -1512,11 +1530,20 @@ export default function ProjectFlow({ projectId, onBack }: Props) {
         )}
 
         <div className="mb-6">
-          <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center justify-between mb-1">
             <span className="text-sm text-slate-400">{completedSteps}/{steps.length} steps complete</span>
-            <span className="text-sm text-slate-400">{Math.round(progress)}%</span>
+            <span className="text-sm font-semibold text-blue-400">{Math.round(progress)}%</span>
           </div>
-          <Progress value={progress} className="h-2" />
+          <Progress value={progress} className="h-3" />
+          {steps.some(s => s.status === 'running') && (
+            <div className="flex items-center justify-between mt-2">
+              <span className="text-xs text-blue-400 flex items-center gap-1">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Running: {steps.find(s => s.status === 'running')?.step_name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}
+              </span>
+              <span className="text-xs text-slate-500">~2 min per step</span>
+            </div>
+          )}
         </div>
 
         <div className="space-y-2">

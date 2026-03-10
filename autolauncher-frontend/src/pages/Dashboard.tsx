@@ -6,16 +6,21 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { toast } from '@/hooks/use-toast';
+import { getFriendlyError } from '@/lib/error-messages';
 import {
   Rocket, Settings, Plus, LogOut, BarChart3, Zap, Globe, Shield, Brain, Code2, Trash2, X, Loader2,
-  LayoutDashboard, Search
+  LayoutDashboard, Search, ArrowUpDown, Filter, ChevronDown
 } from 'lucide-react';
 import SetupWizard from './SetupWizard';
 import ProjectFlow from './ProjectFlow';
 import HelixaModule from './HelixaModule';
 import Planter from './Planter';
+import OnboardingTour, { shouldShowOnboarding } from '@/components/OnboardingTour';
+import Tooltip from '@/components/Tooltip';
 
 type View = 'dashboard' | 'setup' | 'project' | 'helixa' | 'planter';
+type SortOption = 'name_asc' | 'name_desc' | 'date_newest' | 'date_oldest' | 'status';
+type StatusFilter = 'all' | 'setup' | 'questionnaire_done' | 'listing_generated' | 'pipeline_running' | 'submitted' | 'live' | 'pipeline_failed';
 
 export default function Dashboard() {
   const { user, logout } = useAuth();
@@ -31,6 +36,11 @@ export default function Dashboard() {
   const [deleteError, setDeleteError] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [sortBy, setSortBy] = useState<SortOption>('date_newest');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [showSortMenu, setShowSortMenu] = useState(false);
+  const [showFilterMenu, setShowFilterMenu] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   const loadData = async () => {
     try {
@@ -44,13 +54,17 @@ export default function Dashboard() {
       setCredStatus(c);
     } catch (err) {
       console.error(err);
-      toast({ title: 'Failed to load data', description: 'Check your connection.', variant: 'destructive' });
+      const friendly = getFriendlyError(err);
+      toast({ title: friendly.title, description: friendly.description + (friendly.action ? ' ' + friendly.action : ''), variant: 'destructive' });
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => {
+    loadData();
+    if (shouldShowOnboarding()) setShowOnboarding(true);
+  }, []);
 
   const configuredCreds = credStatus.filter(c => c.is_configured).length;
   const validCreds = credStatus.filter(c => c.is_valid).length;
@@ -71,7 +85,8 @@ export default function Dashboard() {
       toast({ title: 'Project deleted' });
       await loadData();
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : 'Failed to delete');
+      const friendly = getFriendlyError(err);
+      setDeleteError(friendly.description + (friendly.action ? ' ' + friendly.action : ''));
     } finally {
       setDeleting(false);
     }
@@ -93,9 +108,33 @@ export default function Dashboard() {
     return map[status] || status;
   };
 
-  const filteredProjects = projects.filter(p =>
-    !searchQuery || p.name.toLowerCase().includes(searchQuery.toLowerCase()) || (p.bundle_id && p.bundle_id.toLowerCase().includes(searchQuery.toLowerCase()))
-  );
+  const filteredProjects = projects
+    .filter(p => {
+      if (searchQuery) {
+        const q = searchQuery.toLowerCase();
+        if (!p.name.toLowerCase().includes(q) && !(p.bundle_id && p.bundle_id.toLowerCase().includes(q))) return false;
+      }
+      if (statusFilter !== 'all' && p.status !== statusFilter) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      switch (sortBy) {
+        case 'name_asc': return a.name.localeCompare(b.name);
+        case 'name_desc': return b.name.localeCompare(a.name);
+        case 'date_newest': return (b.id || 0) - (a.id || 0);
+        case 'date_oldest': return (a.id || 0) - (b.id || 0);
+        case 'status': return a.status.localeCompare(b.status);
+        default: return 0;
+      }
+    });
+
+  const sortLabels: Record<SortOption, string> = {
+    name_asc: 'Name (A-Z)', name_desc: 'Name (Z-A)', date_newest: 'Newest First', date_oldest: 'Oldest First', status: 'By Status',
+  };
+  const filterLabels: Record<StatusFilter, string> = {
+    all: 'All', setup: 'Setup', questionnaire_done: 'Questionnaire Done', listing_generated: 'Listing Ready',
+    pipeline_running: 'Pipeline Running', submitted: 'Complete', live: 'Live', pipeline_failed: 'Failed',
+  };
 
   if (view === 'setup') {
     return <SetupWizard onBack={() => { setView('dashboard'); loadData(); }} />;
@@ -133,6 +172,7 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-blue-950 to-slate-950 pb-20 md:pb-0">
+      {showOnboarding && <OnboardingTour onComplete={() => setShowOnboarding(false)} />}
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-sm sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
@@ -142,14 +182,36 @@ export default function Dashboard() {
           </div>
           <div className="flex items-center gap-2">
             <span className="text-sm text-slate-400 hidden sm:inline truncate max-w-48">{user?.email}</span>
-            <Button variant="ghost" size="sm" onClick={logout} className="text-slate-400 hover:text-white">
-              <LogOut className="w-4 h-4" />
-            </Button>
+            <Tooltip content="Sign out of your account">
+              <Button variant="ghost" size="sm" onClick={logout} className="text-slate-400 hover:text-white">
+                <LogOut className="w-4 h-4" />
+              </Button>
+            </Tooltip>
           </div>
         </div>
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6 md:py-8">
+        {/* Quick Launch CTA */}
+        <Card className="bg-gradient-to-r from-blue-600/20 to-indigo-600/20 border-blue-500/30 mb-6 md:mb-8">
+          <CardContent className="p-4 md:p-6">
+            <div className="flex items-center justify-between flex-wrap gap-4">
+              <div className="flex items-center gap-4">
+                <div className="p-3 bg-blue-500/20 rounded-xl"><Rocket className="w-8 h-8 text-blue-400" /></div>
+                <div>
+                  <h2 className="text-lg md:text-xl font-bold text-white">Launch a New App</h2>
+                  <p className="text-sm text-blue-300/70">From idea to App Store in one click</p>
+                </div>
+              </div>
+              <Tooltip content="Create and launch a new application">
+                <Button onClick={() => { setSelectedProjectId(null); setView('project'); }} className="bg-blue-600 hover:bg-blue-700 text-white h-12 px-6 text-base font-semibold">
+                  <Plus className="w-5 h-5 mr-2" /> New App
+                </Button>
+              </Tooltip>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Stats Cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-6 md:mb-8">
           <Card className="bg-slate-900/50 border-slate-800">
@@ -200,7 +262,7 @@ export default function Dashboard() {
 
         {/* HELIXA + Planter Modules - hidden on mobile (accessed via bottom nav) */}
         <div className="hidden md:grid md:grid-cols-2 gap-4 mb-8">
-          <Card className="bg-indigo-900/20 border-indigo-800/30 cursor-pointer hover:border-indigo-600 transition-colors" onClick={() => setView('helixa')}>
+          <Card className="bg-indigo-900/20 border-indigo-800/30 cursor-pointer hover:border-indigo-600 transition-colors" title="Capture and score app ideas with AI" onClick={() => setView('helixa')}>
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -218,7 +280,7 @@ export default function Dashboard() {
               </div>
             </CardContent>
           </Card>
-          <Card className="bg-emerald-900/20 border-emerald-800/30 cursor-pointer hover:border-emerald-600 transition-colors" onClick={() => setView('planter')}>
+          <Card className="bg-emerald-900/20 border-emerald-800/30 cursor-pointer hover:border-emerald-600 transition-colors" title="Build apps autonomously from ideas using Devin AI" onClick={() => setView('planter')}>
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -245,9 +307,11 @@ export default function Dashboard() {
               <CardTitle className="text-white flex items-center gap-2">
                 <Shield className="w-5 h-5" /> Setup Status
               </CardTitle>
-              <Button size="sm" onClick={() => setView('setup')} className="bg-blue-600 hover:bg-blue-700">
-                <Settings className="w-4 h-4 mr-1" /> Configure
-              </Button>
+              <Tooltip content="Configure API keys and signing certificates">
+                <Button size="sm" onClick={() => setView('setup')} className="bg-blue-600 hover:bg-blue-700">
+                  <Settings className="w-4 h-4 mr-1" /> Configure
+                </Button>
+              </Tooltip>
             </div>
           </CardHeader>
           <CardContent>
@@ -270,21 +334,74 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        {/* Projects */}
-        <div className="flex items-center justify-between mb-4 gap-3">
+        {/* Projects with sorting & filtering */}
+        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <h2 className="text-lg font-semibold text-white shrink-0">Projects</h2>
-          <div className="flex items-center gap-2 flex-1 justify-end">
-            {projects.length > 3 && (
-              <div className="relative hidden sm:block">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
-                <Input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search..." className="pl-8 h-8 w-40 bg-slate-800/50 border-slate-700 text-white text-xs" />
-              </div>
-            )}
-            <Button onClick={() => { setSelectedProjectId(null); setView('project'); }} size="sm" className="bg-blue-600 hover:bg-blue-700">
-              <Plus className="w-4 h-4 mr-1" /> <span className="hidden sm:inline">New App</span><span className="sm:hidden">New</span>
-            </Button>
+          <div className="flex items-center gap-2 flex-1 justify-end flex-wrap">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+              <Input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search projects..." className="pl-8 h-8 w-40 bg-slate-800/50 border-slate-700 text-white text-xs" />
+            </div>
+            <div className="relative">
+              <Tooltip content="Sort projects">
+                <Button variant="outline" size="sm" className="border-slate-700 text-slate-300 h-8 text-xs gap-1" onClick={() => { setShowSortMenu(!showSortMenu); setShowFilterMenu(false); }}>
+                  <ArrowUpDown className="w-3.5 h-3.5" /> {sortLabels[sortBy]} <ChevronDown className="w-3 h-3" />
+                </Button>
+              </Tooltip>
+              {showSortMenu && (
+                <div className="absolute right-0 top-full mt-1 bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-30 py-1 min-w-36">
+                  {(Object.keys(sortLabels) as SortOption[]).map(opt => (
+                    <button key={opt} onClick={() => { setSortBy(opt); setShowSortMenu(false); }}
+                      className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${sortBy === opt ? 'text-blue-400 bg-blue-500/10' : 'text-slate-300 hover:bg-slate-700'}`}>
+                      {sortLabels[opt]}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="relative">
+              <Tooltip content="Filter by project status">
+                <Button variant="outline" size="sm" className={`border-slate-700 h-8 text-xs gap-1 ${statusFilter !== 'all' ? 'text-blue-400 border-blue-500/50' : 'text-slate-300'}`}
+                  onClick={() => { setShowFilterMenu(!showFilterMenu); setShowSortMenu(false); }}>
+                  <Filter className="w-3.5 h-3.5" /> {filterLabels[statusFilter]} <ChevronDown className="w-3 h-3" />
+                </Button>
+              </Tooltip>
+              {showFilterMenu && (
+                <div className="absolute right-0 top-full mt-1 bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-30 py-1 min-w-36">
+                  {(Object.keys(filterLabels) as StatusFilter[]).map(opt => (
+                    <button key={opt} onClick={() => { setStatusFilter(opt); setShowFilterMenu(false); }}
+                      className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${statusFilter === opt ? 'text-blue-400 bg-blue-500/10' : 'text-slate-300 hover:bg-slate-700'}`}>
+                      {filterLabels[opt]}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <Tooltip content="Create and launch a new application">
+              <Button onClick={() => { setSelectedProjectId(null); setView('project'); }} size="sm" className="bg-blue-600 hover:bg-blue-700">
+                <Plus className="w-4 h-4 mr-1" /> <span className="hidden sm:inline">New App</span><span className="sm:hidden">New</span>
+              </Button>
+            </Tooltip>
           </div>
         </div>
+
+        {(statusFilter !== 'all' || searchQuery) && (
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            {statusFilter !== 'all' && (
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-500/10 border border-blue-500/30 rounded-full text-xs text-blue-300">
+                Status: {filterLabels[statusFilter]}
+                <button onClick={() => setStatusFilter('all')} className="hover:text-white"><X className="w-3 h-3" /></button>
+              </span>
+            )}
+            {searchQuery && (
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-500/10 border border-blue-500/30 rounded-full text-xs text-blue-300">
+                Search: "{searchQuery}"
+                <button onClick={() => setSearchQuery('')} className="hover:text-white"><X className="w-3 h-3" /></button>
+              </span>
+            )}
+            <span className="text-xs text-slate-500">{filteredProjects.length} of {projects.length} projects</span>
+          </div>
+        )}
 
         {projects.length === 0 ? (
           <Card className="bg-slate-900/50 border-slate-800">
@@ -365,6 +482,10 @@ export default function Dashboard() {
       </nav>
 
       {/* Delete confirmation dialog */}
+      {(showSortMenu || showFilterMenu) && (
+        <div className="fixed inset-0 z-20" onClick={() => { setShowSortMenu(false); setShowFilterMenu(false); }} />
+      )}
+
       {deleteProjectId !== null && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-sm w-full">
