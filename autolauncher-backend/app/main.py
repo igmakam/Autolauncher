@@ -192,6 +192,36 @@ async def get_me(
     )
 
 
+@app.post("/api/auth/change-password")
+async def change_password(
+    body: dict,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    from app.auth import verify_password, hash_password
+    user_id = int(current_user["sub"])
+    current_pw = body.get("current_password", "")
+    new_pw = body.get("new_password", "")
+
+    if not current_pw or not new_pw:
+        raise HTTPException(status_code=400, detail="Both current_password and new_password are required")
+    if len(new_pw) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+
+    cursor = await db.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,))
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not verify_password(current_pw, dict(row)["password_hash"]):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
+
+    new_hash = hash_password(new_pw)
+    await db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user_id))
+    await db.commit()
+    return {"ok": True, "message": "Password changed successfully"}
+
+
 # ==================== CREDENTIALS ====================
 
 @app.post("/api/credentials")
