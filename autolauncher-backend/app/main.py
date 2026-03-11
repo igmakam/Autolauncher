@@ -23,6 +23,7 @@ from app.models import (
 from app.ai_engine import get_questionnaire_questions, generate_store_listing, generate_localization, generate_additional_growth_ideas, generate_launch_strategy, generate_campaign_content, analyze_setup_feedback
 from app.pipeline import create_pipeline_run, get_pipeline_run, get_latest_pipeline_run, run_pipeline, PIPELINE_STEPS, pipeline_monitor_task
 from app.store_api import create_apple_client, create_google_client
+from app import watchdog, task_queue
 import asyncio
 import logging
 
@@ -35,13 +36,20 @@ async def lifespan(app: FastAPI):
     # Start background pipeline monitor
     monitor = asyncio.create_task(pipeline_monitor_task(DATABASE_PATH))
     logger.info("Background pipeline monitor started")
+    # Start watchdog + queue recovery
+    wd = asyncio.create_task(watchdog.watchdog_loop())
+    stale = asyncio.create_task(task_queue.stale_task_recovery_loop())
+    logger.info("Watchdog + task queue recovery started")
     yield
     monitor.cancel()
-    try:
-        await monitor
-    except asyncio.CancelledError:
-        pass
-    logger.info("Background pipeline monitor stopped")
+    wd.cancel()
+    stale.cancel()
+    for t in [monitor, wd, stale]:
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+    logger.info("Background tasks stopped")
 
 app = FastAPI(title="Auto Launch API", lifespan=lifespan)
 
@@ -2529,3 +2537,60 @@ async def planter_send_message(
             return resp.json()
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="Devin API timeout")
+
+
+# ==================== WATCHDOG + HEARTBEAT ====================
+
+class HeartbeatPayload(PydanticBaseModel):
+    host: str = ""
+    timestamp: str = ""
+    status: str = "alive"
+    services: dict = {}
+    autoFixed: list = []
+
+@app.post("/heartbeat")
+async def heartbeat(payload: HeartbeatPayload):
+    return await watchdog.receive_heartbeat(payload.dict())
+
+@app.get("/watchdog/status")
+async def watchdog_status():
+    return watchdog.get_status()
+
+
+# ==================== TASK QUEUE ====================
+
+class TaskCreate(PydanticBaseModel):
+    type: str
+    payload: dict
+    source: str = "user"
+
+class TaskComplete(PydanticBaseModel):
+    result: dict = None
+    error: str = None
+
+@app.post("/queue/task")
+async def queue_task(body: TaskCreate):
+    task = task_queue.enqueue(body.type, body.payload, body.source)
+    return {"ok": True, "taskId": task["id"]}
+
+@app.get("/queue/tasks")
+async def get_tasks():
+    return {"tasks": task_queue.dequeue()}
+
+@app.post("/queue/task/{task_id}/done")
+async def complete_task(task_id: str, body: TaskComplete):
+    ok = task_queue.complete(task_id, body.result, body.error)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Task nenájdený")
+    return {"ok": True}
+
+@app.post("/queue/task/{task_id}/retry")
+async def retry_task(task_id: str):
+    ok = task_queue.retry(task_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Task nenájdený")
+    return {"ok": True}
+
+@app.get("/queue/status")
+async def queue_status():
+    return task_queue.status_summary()
