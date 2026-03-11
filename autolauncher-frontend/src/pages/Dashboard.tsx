@@ -311,6 +311,118 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
+        {/* App Pipeline Tracker */}
+        {projects.length > 0 && (() => {
+          const STAGES = ['setup', 'questionnaire_done', 'listing_generated', 'pipeline_running', 'submitted', 'live'];
+          const STAGE_LABELS = ['Setup', 'Dotazník', 'Listing', 'Build', 'Submit', 'Live'];
+          const STAGE_ICONS = ['⚙️', '📋', '📝', '🏗️', '📤', '🟢'];
+          const stageIndex = (status: string) => Math.max(0, STAGES.indexOf(status));
+
+          const platformIcon = (platform: string) => {
+            if (platform === 'ios') return '🍎';
+            if (platform === 'android') return '🤖';
+            return '📱';
+          };
+
+          const actionButton = (p: Project) => {
+            const s = p.status;
+            if (s === 'setup') return (
+              <button onClick={e => { e.stopPropagation(); openProject(p.id); }}
+                className="shrink-0 px-2.5 py-1 text-[10px] font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors whitespace-nowrap">
+                Vyplniť dotazník
+              </button>
+            );
+            if (s === 'questionnaire_done') return (
+              <button onClick={e => { e.stopPropagation(); openProject(p.id); }}
+                className="shrink-0 px-2.5 py-1 text-[10px] font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors whitespace-nowrap">
+                Generovať listing
+              </button>
+            );
+            if (s === 'listing_generated') return (
+              <button onClick={e => { e.stopPropagation(); openProject(p.id); }}
+                className="shrink-0 px-2.5 py-1 text-[10px] font-semibold bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors whitespace-nowrap">
+                Spustiť build
+              </button>
+            );
+            if (s === 'pipeline_running') return (
+              <span className="shrink-0 px-2.5 py-1 text-[10px] font-semibold bg-blue-500/20 text-blue-300 rounded-lg animate-pulse whitespace-nowrap">
+                ⏳ Builduje sa...
+              </span>
+            );
+            if (s === 'submitted') return (
+              <span className="shrink-0 px-2.5 py-1 text-[10px] font-semibold bg-green-500/20 text-green-300 rounded-lg whitespace-nowrap">
+                ✓ Odoslané
+              </span>
+            );
+            if (s === 'pipeline_failed') return (
+              <button onClick={e => { e.stopPropagation(); openProject(p.id); }}
+                className="shrink-0 px-2.5 py-1 text-[10px] font-semibold bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors whitespace-nowrap">
+                🔧 Retry
+              </button>
+            );
+            if (s === 'live') return (
+              <span className="shrink-0 px-2.5 py-1 text-[10px] font-semibold bg-green-500/20 text-green-300 rounded-lg animate-pulse whitespace-nowrap">
+                🟢 Live
+              </span>
+            );
+            return null;
+          };
+
+          return (
+            <div className="bg-slate-900/30 rounded-xl p-4 mb-6 border border-slate-800/50">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wide">Pipeline Tracker</h2>
+                <span className="text-xs text-slate-600">{projects.length} appiek</span>
+              </div>
+              {projects.map(p => {
+                const current = stageIndex(p.status);
+                return (
+                  <div key={p.id}
+                    className="flex items-center gap-3 py-2.5 border-b border-slate-800/50 last:border-0 cursor-pointer hover:bg-slate-800/20 rounded-lg px-1 transition-colors"
+                    onClick={() => openProject(p.id)}>
+                    {/* Left: icon + name + bundle_id */}
+                    <div className="flex items-center gap-2 min-w-0 w-28 shrink-0">
+                      <span className="text-base leading-none">{platformIcon(p.platform)}</span>
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-white truncate">{p.name}</p>
+                        {p.bundle_id && <p className="text-[9px] text-slate-500 truncate">{p.bundle_id}</p>}
+                      </div>
+                    </div>
+                    {/* Center: pipeline strip */}
+                    <div className="hidden sm:flex items-center flex-1 overflow-x-auto">
+                      {STAGES.map((stage, i) => {
+                        const isDone = i < current;
+                        const isCurrent = i === current;
+                        const isFuture = i > current;
+                        return (
+                          <div key={stage} className="flex items-center">
+                            <div className={`px-1.5 py-0.5 rounded text-[9px] font-medium whitespace-nowrap ${
+                              isCurrent
+                                ? 'bg-blue-600 text-white'
+                                : isDone
+                                ? 'text-green-400'
+                                : 'text-slate-600'
+                            }`}>
+                              <span className={isDone ? 'line-through' : ''}>{STAGE_ICONS[i]} {STAGE_LABELS[i]}</span>
+                            </div>
+                            {i < STAGES.length - 1 && (
+                              <span className={`text-[9px] mx-0.5 ${isDone ? 'text-green-700' : 'text-slate-700'}`}>——</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {/* Right: action button */}
+                    <div className="shrink-0 ml-auto">
+                      {actionButton(p)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
+
         {/* Stats Cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-6 md:mb-8">
           <Card className="bg-slate-900/50 border-slate-800">
