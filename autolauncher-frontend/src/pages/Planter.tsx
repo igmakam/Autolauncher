@@ -4,6 +4,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { useToast } from '@/hooks/use-toast';
 import {
   ArrowLeft, Send, Loader2, Brain, Code2, Eye, Play,
   ExternalLink, FileCode, Globe, Rocket,
@@ -19,6 +20,7 @@ interface Props {
 type ViewMode = 'select' | 'building' | 'history';
 
 export default function Planter({ onBack, initialIdeaId }: Props) {
+  const { toast } = useToast();
   const [ideas, setIdeas] = useState<HelixaIdeaSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<ViewMode>('select');
@@ -39,6 +41,10 @@ export default function Planter({ onBack, initialIdeaId }: Props) {
   const [customName, setCustomName] = useState('');
   const [customDescription, setCustomDescription] = useState('');
   const [showCustom, setShowCustom] = useState(false);
+
+  // OpenClaw builder
+  const [ocBuilding, setOcBuilding] = useState(false);
+  const [ocSession, setOcSession] = useState<{ id: number; status: string; app_name?: string; message?: string } | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -149,6 +155,36 @@ export default function Planter({ onBack, initialIdeaId }: Props) {
       console.error(e);
     } finally {
       setSendingMessage(false);
+    }
+  };
+
+  const startOpenClawBuild = async (ideaName?: string, ideaDescription?: string) => {
+    const name = ideaName || customName;
+    if (!name) return;
+    setOcBuilding(true);
+    try {
+      const token = localStorage.getItem('token');
+      const r = await fetch(`${import.meta.env.VITE_API_URL}/api/builder/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({
+          app_name: name,
+          app_description: ideaDescription || customDescription || '',
+          platform: 'ios',
+        }),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        setOcSession(data);
+        toast({ title: '🚀 Build spustený!', description: `OpenClaw builduje "${data.app_name || name}"` });
+      } else {
+        const err = await r.json();
+        toast({ title: 'Chyba', description: err.detail || 'Skús znova', variant: 'destructive' });
+      }
+    } catch (e) {
+      toast({ title: 'Chyba', description: 'Nedostupný server', variant: 'destructive' });
+    } finally {
+      setOcBuilding(false);
     }
   };
 
@@ -573,13 +609,31 @@ export default function Planter({ onBack, initialIdeaId }: Props) {
                 <Input value={customDescription} onChange={e => setCustomDescription(e.target.value)}
                   placeholder="Describe what the app should do..."
                   className="bg-slate-800 border-slate-700 text-white" />
-                <div className="flex gap-2">
+                <div className="flex gap-2 flex-wrap">
                   <Button onClick={startCustomBuild} disabled={!customName.trim() || creating} className="bg-emerald-600 hover:bg-emerald-700">
                     {creating ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Rocket className="w-4 h-4 mr-1" />}
                     Start Building
                   </Button>
+                  <Button
+                    onClick={() => startOpenClawBuild()}
+                    disabled={!customName.trim() || ocBuilding}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                  >
+                    {ocBuilding ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : '🤖 '}
+                    {ocBuilding ? 'Spúšťam...' : 'Build s OpenClaw'}
+                  </Button>
                   <Button variant="ghost" onClick={() => setShowCustom(false)} className="text-slate-400">Cancel</Button>
                 </div>
+                {ocSession && (
+                  <div className="mt-3 p-3 bg-indigo-900/20 border border-indigo-700/30 rounded-lg">
+                    <div className="flex items-center gap-2 text-sm">
+                      <div className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse" />
+                      <span className="text-indigo-300 font-medium">{ocSession.app_name || customName}</span>
+                      <span className="text-indigo-500 text-xs ml-auto">Session #{ocSession.id}</span>
+                    </div>
+                    <div className="text-xs text-indigo-400/70 mt-1">{ocSession.message || 'Build prebieha...'}</div>
+                  </div>
+                )}
               </div>
             )}
           </CardContent>
@@ -599,25 +653,53 @@ export default function Planter({ onBack, initialIdeaId }: Props) {
         ) : (
           <div className="grid md:grid-cols-2 gap-4">
             {ideas.map(idea => (
-              <Card key={idea.id}
-                className="bg-slate-900/50 border-slate-800 hover:border-emerald-600/50 cursor-pointer transition-all"
-                onClick={async () => { const full = await api.helixa.ideas.get(idea.id); startBuild(full); }}>
+              <Card key={idea.id} className="bg-slate-900/50 border-slate-800 hover:border-emerald-600/50 transition-all">
                 <CardContent className="p-4">
                   <div className="flex items-center justify-between mb-2">
                     <h3 className="font-semibold text-white truncate flex-1">{idea.idea_name}</h3>
                     <span className={`text-xl font-bold ml-2 ${scoreColor(idea.overall_score)}`}>{idea.overall_score}</span>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 mb-3">
                     <Badge className="bg-emerald-500/20 text-emerald-400 text-xs">{idea.product_type}</Badge>
                     <span className="text-xs text-slate-500">{new Date(idea.created_at).toLocaleDateString()}</span>
                   </div>
-                  <div className="mt-3 flex items-center gap-1 text-xs text-emerald-400">
-                    <Play className="w-3 h-3" /> Click to build with Devin AI
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      onClick={async () => { const full = await api.helixa.ideas.get(idea.id); startBuild(full); }}
+                      disabled={creating}
+                      className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                    >
+                      {creating ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <Play className="w-3 h-3 mr-1" />}
+                      Build with Devin
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={async () => {
+                        const full = await api.helixa.ideas.get(idea.id);
+                        startOpenClawBuild(full.idea_name, full.structured_idea?.problem_statement || '');
+                      }}
+                      disabled={ocBuilding}
+                      className="text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
+                    >
+                      {ocBuilding ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : '🤖 '}
+                      OpenClaw
+                    </Button>
                   </div>
                 </CardContent>
               </Card>
             ))}
           </div>
+          {ocSession && (
+            <div className="mt-4 p-3 bg-indigo-900/20 border border-indigo-700/30 rounded-lg">
+              <div className="flex items-center gap-2 text-sm">
+                <div className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse" />
+                <span className="text-indigo-300 font-medium">{ocSession.app_name}</span>
+                <span className="text-indigo-500 text-xs ml-auto">Session #{ocSession.id}</span>
+              </div>
+              <div className="text-xs text-indigo-400/70 mt-1">{ocSession.message || 'Build prebieha...'}</div>
+            </div>
+          )}
         )}
       </main>
     </div>
