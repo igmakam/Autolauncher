@@ -25,6 +25,14 @@ type StatusFilter = 'all' | 'setup' | 'questionnaire_done' | 'listing_generated'
 export default function Dashboard() {
   const { user, logout } = useAuth();
   const [view, setView] = useState<View>('dashboard');
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [showChangePassword, setShowChangePassword] = useState(false);
+  const [cpCurrent, setCpCurrent] = useState('');
+  const [cpNew, setCpNew] = useState('');
+  const [cpConfirm, setCpConfirm] = useState('');
+  const [cpLoading, setCpLoading] = useState(false);
+  const [cpError, setCpError] = useState('');
+  const [cpSuccess, setCpSuccess] = useState(false);
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [credStatus, setCredStatus] = useState<CredentialStatus[]>([]);
@@ -68,6 +76,31 @@ export default function Dashboard() {
 
   const configuredCreds = credStatus.filter(c => c.is_configured).length;
   const validCreds = credStatus.filter(c => c.is_valid).length;
+
+  const handleChangePassword = async () => {
+    setCpError('');
+    if (!cpCurrent || !cpNew || !cpConfirm) { setCpError('Vyplň všetky polia.'); return; }
+    if (cpNew !== cpConfirm) { setCpError('Nové heslá sa nezhodujú.'); return; }
+    if (cpNew.length < 6) { setCpError('Heslo musí mať aspoň 6 znakov.'); return; }
+    setCpLoading(true);
+    try {
+      const token = localStorage.getItem('token');
+      const r = await fetch(`${import.meta.env.VITE_API_URL}/api/auth/change-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ current_password: cpCurrent, new_password: cpNew })
+      });
+      if (r.ok) {
+        setCpSuccess(true);
+        setCpCurrent(''); setCpNew(''); setCpConfirm('');
+        setTimeout(() => { setShowChangePassword(false); setCpSuccess(false); }, 2000);
+      } else {
+        const d = await r.json();
+        setCpError(d.detail || 'Nesprávne aktuálne heslo.');
+      }
+    } catch { setCpError('Chyba servera. Skús znova.'); }
+    finally { setCpLoading(false); }
+  };
 
   const openProject = (id: number) => {
     setSelectedProjectId(id);
@@ -180,14 +213,80 @@ export default function Dashboard() {
             <img src="/logo.png" alt="Auto Launch" className="h-8 w-8" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
             <h1 className="text-xl font-bold text-white">Auto Launch</h1>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-slate-400 hidden sm:inline truncate max-w-48">{user?.email}</span>
-            <Tooltip content="Sign out of your account">
-              <Button variant="ghost" size="sm" onClick={logout} className="text-slate-400 hover:text-white">
-                <LogOut className="w-4 h-4" />
-              </Button>
-            </Tooltip>
+          <div className="flex items-center gap-2 relative">
+            <button
+              onClick={() => setShowProfileMenu(v => !v)}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-slate-700/50 transition-colors"
+            >
+              <span className="text-sm text-slate-400 hidden sm:inline truncate max-w-48">{user?.email}</span>
+              <span className="text-slate-500 text-xs">▾</span>
+            </button>
+            {showProfileMenu && (
+              <div className="absolute right-0 top-10 z-50 bg-slate-800 border border-slate-700 rounded-xl shadow-xl w-48 py-1" onClick={() => setShowProfileMenu(false)}>
+                <button
+                  onClick={() => setShowChangePassword(true)}
+                  className="w-full text-left px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-700 flex items-center gap-2"
+                >
+                  🔑 Zmeniť heslo
+                </button>
+                <div className="border-t border-slate-700 my-1" />
+                <button
+                  onClick={logout}
+                  className="w-full text-left px-4 py-2.5 text-sm text-red-400 hover:bg-slate-700 flex items-center gap-2"
+                >
+                  <LogOut className="w-3.5 h-3.5" /> Odhlásiť
+                </button>
+              </div>
+            )}
           </div>
+
+          {/* Change Password Modal */}
+          {showChangePassword && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowChangePassword(false)}>
+              <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-sm mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+                <h3 className="text-lg font-bold text-white mb-4">🔑 Zmena hesla</h3>
+                {cpSuccess ? (
+                  <div className="text-green-400 text-center py-4">✓ Heslo úspešne zmenené!</div>
+                ) : (
+                  <>
+                    <div className="space-y-3 mb-4">
+                      <input
+                        type="password" placeholder="Aktuálne heslo" value={cpCurrent}
+                        onChange={e => setCpCurrent(e.target.value)}
+                        className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-blue-500"
+                      />
+                      <input
+                        type="password" placeholder="Nové heslo" value={cpNew}
+                        onChange={e => setCpNew(e.target.value)}
+                        className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-blue-500"
+                      />
+                      <input
+                        type="password" placeholder="Potvrď nové heslo" value={cpConfirm}
+                        onChange={e => setCpConfirm(e.target.value)}
+                        onKeyDown={e => e.key==='Enter' && handleChangePassword()}
+                        className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-blue-500"
+                      />
+                      {cpError && <p className="text-red-400 text-xs">{cpError}</p>}
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleChangePassword} disabled={cpLoading}
+                        className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium py-2.5 rounded-lg transition-colors"
+                      >
+                        {cpLoading ? 'Ukladám...' : 'Zmeniť heslo'}
+                      </button>
+                      <button
+                        onClick={() => { setShowChangePassword(false); setCpError(''); }}
+                        className="px-4 bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm rounded-lg transition-colors"
+                      >
+                        Zrušiť
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </header>
 
