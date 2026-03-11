@@ -118,7 +118,7 @@ function VoiceRecorder({ onTranscript, onTextSubmit, autoSubmitVoice = true }: {
 
 // ============ IDEA LIST ============
 
-function IdeaList({ ideas, selectedId, onSelect, searchQuery, onSearchChange }: { ideas: HelixaIdeaSummary[]; selectedId: number | null; onSelect: (id: number) => void; searchQuery?: string; onSearchChange?: (q: string) => void }) {
+function IdeaList({ ideas, selectedId, onSelect, searchQuery, onSearchChange, onAddToQueue, queuedIds }: { ideas: HelixaIdeaSummary[]; selectedId: number | null; onSelect: (id: number) => void; searchQuery?: string; onSearchChange?: (q: string) => void; onAddToQueue?: (id: number) => void; queuedIds?: number[] }) {
   const filteredIdeas = searchQuery
     ? ideas.filter(i => i.idea_name.toLowerCase().includes(searchQuery.toLowerCase()) || i.product_type.toLowerCase().includes(searchQuery.toLowerCase()))
     : ideas;
@@ -178,7 +178,23 @@ function IdeaList({ ideas, selectedId, onSelect, searchQuery, onSearchChange }: 
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`text-lg font-bold ${scoreColor(idea.overall_score)}`}>{idea.overall_score}</span>
-                  <ChevronRight className="w-4 h-4 text-slate-500" />
+                  {onAddToQueue && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onAddToQueue(idea.id); }}
+                      className={`w-6 h-6 flex items-center justify-center rounded transition-colors ${
+                        queuedIds?.includes(idea.id)
+                          ? 'text-green-400 hover:text-green-300'
+                          : 'text-blue-400 hover:text-blue-300'
+                      }`}
+                      title={queuedIds?.includes(idea.id) ? 'In queue' : 'Add to Launch Queue'}
+                    >
+                      {queuedIds?.includes(idea.id)
+                        ? <Check className="w-4 h-4" />
+                        : <ChevronRight className="w-4 h-4" />
+                      }
+                    </button>
+                  )}
+                  {!onAddToQueue && <ChevronRight className="w-4 h-4 text-slate-500" />}
                 </div>
               </div>
             </div>
@@ -737,10 +753,93 @@ function ExperimentalPanel({ items, stats, onGenerate, onFeedback, onDelete, gen
   );
 }
 
+// ============ LAUNCH QUEUE ============
+
+function LaunchQueue({ queue, ideas, onRemove, onLaunch, onMove, onSelect }: {
+  queue: number[];
+  ideas: HelixaIdeaSummary[];
+  onRemove: (id: number) => void;
+  onLaunch: (id: number) => void;
+  onMove: (from: number, to: number) => void;
+  onSelect?: (id: number) => void;
+}) {
+  const dragIndex = useRef<number | null>(null);
+
+  const queuedIdeas = queue
+    .map(id => ideas.find(i => i.id === id))
+    .filter(Boolean) as HelixaIdeaSummary[];
+
+  const scoreColor = (s: number) => s >= 8 ? 'text-green-400' : s >= 6 ? 'text-yellow-400' : 'text-red-400';
+
+  return (
+    <div className="bg-slate-800/30 border border-slate-700 rounded-xl p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-semibold text-slate-300 flex items-center gap-2">
+          <Rocket className="w-4 h-4 text-green-400" />
+          Launch Queue
+          <span className="bg-slate-700 text-slate-400 text-xs px-1.5 py-0.5 rounded-full">{queue.length}</span>
+        </h3>
+      </div>
+
+      {queue.length === 0 ? (
+        <div className="text-center py-6 text-slate-500 text-sm">
+          <p>Pridaj nápady šípkou →</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {queuedIdeas.map((idea, index) => (
+            <div
+              key={idea.id}
+              draggable
+              onDragStart={() => { dragIndex.current = index; }}
+              onDragOver={(e) => { e.preventDefault(); }}
+              onDrop={() => {
+                if (dragIndex.current !== null && dragIndex.current !== index) {
+                  onMove(dragIndex.current, index);
+                  dragIndex.current = null;
+                }
+              }}
+              className="flex items-center gap-2 p-2 bg-slate-900/50 border border-slate-700/50 rounded-lg cursor-grab active:cursor-grabbing hover:border-slate-600 transition-colors"
+            >
+              <span className="text-xs text-slate-500 w-4 text-center shrink-0">{index + 1}</span>
+              <div
+                className="flex-1 min-w-0 cursor-pointer"
+                onClick={() => onSelect?.(idea.id)}
+              >
+                <p className="text-sm text-white truncate">{idea.idea_name}</p>
+                <p className={`text-xs font-bold ${scoreColor(idea.overall_score)}`}>{idea.overall_score}/10</p>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => onLaunch(idea.id)}
+                className="bg-green-600 hover:bg-green-700 h-7 px-2 text-xs shrink-0"
+              >
+                <Rocket className="w-3 h-3 mr-1" /> Launch
+              </Button>
+              <button
+                onClick={() => onRemove(idea.id)}
+                className="text-slate-500 hover:text-red-400 transition-colors shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ============ MAIN MODULE ============
 
 export default function HelixaModule({ onBack, onBuildApp }: Props) {
   const [mainTab, setMainTab] = useState('ideas');
+  const [launchQueue, setLaunchQueue] = useState<number[]>([]);
+  const addToQueue = (id: number) => { if (!launchQueue.includes(id)) setLaunchQueue(prev => [...prev, id]); };
+  const removeFromQueue = (id: number) => { setLaunchQueue(prev => prev.filter(q => q !== id)); };
+  const moveInQueue = (from: number, to: number) => {
+    setLaunchQueue(prev => { const next = [...prev]; const [item] = next.splice(from, 1); next.splice(to, 0, item); return next; });
+  };
   const [ideas, setIdeas] = useState<HelixaIdeaSummary[]>([]);
   const [selectedIdea, setSelectedIdea] = useState<HelixaIdea | null>(null);
   const [selectedIdeaId, setSelectedIdeaId] = useState<number | null>(null);
@@ -987,7 +1086,7 @@ export default function HelixaModule({ onBack, onBuildApp }: Props) {
                     </CardContent>
                   </Card>
                 )}
-                <IdeaList ideas={ideas} selectedId={selectedIdeaId} onSelect={selectIdea} searchQuery={ideaSearchQuery} onSearchChange={setIdeaSearchQuery} />
+                <IdeaList ideas={ideas} selectedId={selectedIdeaId} onSelect={selectIdea} searchQuery={ideaSearchQuery} onSearchChange={setIdeaSearchQuery} onAddToQueue={addToQueue} queuedIds={launchQueue} />
               </div>
             )}
 
@@ -1010,11 +1109,19 @@ export default function HelixaModule({ onBack, onBuildApp }: Props) {
                     </CardContent>
                   </Card>
                 )}
-                <IdeaList ideas={ideas} selectedId={selectedIdeaId} onSelect={selectIdea} searchQuery={ideaSearchQuery} onSearchChange={setIdeaSearchQuery} />
+                <IdeaList ideas={ideas} selectedId={selectedIdeaId} onSelect={selectIdea} searchQuery={ideaSearchQuery} onSearchChange={setIdeaSearchQuery} onAddToQueue={addToQueue} queuedIds={launchQueue} />
               </div>
 
-              {/* Right panel - detail */}
-              <div className="md:col-span-3">
+              {/* Right panel - launch queue + detail */}
+              <div className="md:col-span-3 space-y-4">
+                <LaunchQueue
+                  queue={launchQueue}
+                  ideas={ideas}
+                  onRemove={removeFromQueue}
+                  onLaunch={(id) => createAppFromIdea(id)}
+                  onMove={moveInQueue}
+                  onSelect={selectIdea}
+                />
                 {selectedIdea ? (
                   <IdeaDetail
                     idea={selectedIdea}
