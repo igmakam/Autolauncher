@@ -4,51 +4,22 @@ import { api, DashboardData, Project, CredentialStatus } from '../lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import { toast } from '@/hooks/use-toast';
-import { getFriendlyError } from '@/lib/error-messages';
-import {
-  Rocket, Settings, Plus, LogOut, BarChart3, Zap, Globe, Shield, Brain, Code2, Trash2, X, Loader2,
-  LayoutDashboard, Search, ArrowUpDown, Filter, ChevronDown
-} from 'lucide-react';
+import { Rocket, Settings, Plus, LogOut, BarChart3, Zap, Globe, Shield, Brain } from 'lucide-react';
 import SetupWizard from './SetupWizard';
 import ProjectFlow from './ProjectFlow';
 import HelixaModule from './HelixaModule';
-import Planter from './Planter';
-import OnboardingTour, { shouldShowOnboarding } from '@/components/OnboardingTour';
-import Tooltip from '@/components/Tooltip';
+import DevBrainModule from './DevBrainModule';
 
-type View = 'dashboard' | 'setup' | 'project' | 'helixa' | 'planter';
-type SortOption = 'name_asc' | 'name_desc' | 'date_newest' | 'date_oldest' | 'status';
-type StatusFilter = 'all' | 'setup' | 'questionnaire_done' | 'listing_generated' | 'pipeline_running' | 'submitted' | 'live' | 'pipeline_failed';
+type View = 'dashboard' | 'setup' | 'project' | 'helixa' | 'devbrain';
 
 export default function Dashboard() {
   const { user, logout } = useAuth();
   const [view, setView] = useState<View>('dashboard');
-  const [showProfileMenu, setShowProfileMenu] = useState(false);
-  const [showChangePassword, setShowChangePassword] = useState(false);
-  const [cpCurrent, setCpCurrent] = useState('');
-  const [cpNew, setCpNew] = useState('');
-  const [cpConfirm, setCpConfirm] = useState('');
-  const [cpLoading, setCpLoading] = useState(false);
-  const [cpError, setCpError] = useState('');
-  const [cpSuccess, setCpSuccess] = useState(false);
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
   const [credStatus, setCredStatus] = useState<CredentialStatus[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
-  const [planterIdeaId, setPlanterIdeaId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
-  const [deleteProjectId, setDeleteProjectId] = useState<number | null>(null);
-  const [deletePassword, setDeletePassword] = useState('');
-  const [deleteError, setDeleteError] = useState('');
-  const [deleting, setDeleting] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [sortBy, setSortBy] = useState<SortOption>('date_newest');
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [showSortMenu, setShowSortMenu] = useState(false);
-  const [showFilterMenu, setShowFilterMenu] = useState(false);
-  const [showOnboarding, setShowOnboarding] = useState(false);
 
   const loadData = async () => {
     try {
@@ -62,67 +33,19 @@ export default function Dashboard() {
       setCredStatus(c);
     } catch (err) {
       console.error(err);
-      const friendly = getFriendlyError(err);
-      toast({ title: friendly.title, description: friendly.description + (friendly.action ? ' ' + friendly.action : ''), variant: 'destructive' });
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    loadData();
-    if (shouldShowOnboarding()) setShowOnboarding(true);
-  }, []);
+  useEffect(() => { loadData(); }, []);
 
   const configuredCreds = credStatus.filter(c => c.is_configured).length;
   const validCreds = credStatus.filter(c => c.is_valid).length;
 
-  const handleChangePassword = async () => {
-    setCpError('');
-    if (!cpCurrent || !cpNew || !cpConfirm) { setCpError('Vyplň všetky polia.'); return; }
-    if (cpNew !== cpConfirm) { setCpError('Nové heslá sa nezhodujú.'); return; }
-    if (cpNew.length < 6) { setCpError('Heslo musí mať aspoň 6 znakov.'); return; }
-    setCpLoading(true);
-    try {
-      const token = localStorage.getItem('token');
-      const r = await fetch(`${import.meta.env.VITE_API_URL}/api/auth/change-password`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ current_password: cpCurrent, new_password: cpNew })
-      });
-      if (r.ok) {
-        setCpSuccess(true);
-        setCpCurrent(''); setCpNew(''); setCpConfirm('');
-        setTimeout(() => { setShowChangePassword(false); setCpSuccess(false); }, 2000);
-      } else {
-        const d = await r.json();
-        setCpError(d.detail || 'Nesprávne aktuálne heslo.');
-      }
-    } catch { setCpError('Chyba servera. Skús znova.'); }
-    finally { setCpLoading(false); }
-  };
-
   const openProject = (id: number) => {
     setSelectedProjectId(id);
     setView('project');
-  };
-
-  const handleDeleteProject = async () => {
-    if (!deleteProjectId || !deletePassword) return;
-    setDeleting(true);
-    setDeleteError('');
-    try {
-      await api.projects.delete(deleteProjectId, deletePassword);
-      setDeleteProjectId(null);
-      setDeletePassword('');
-      toast({ title: 'Project deleted' });
-      await loadData();
-    } catch (err) {
-      const friendly = getFriendlyError(err);
-      setDeleteError(friendly.description + (friendly.action ? ' ' + friendly.action : ''));
-    } finally {
-      setDeleting(false);
-    }
   };
 
   const statusColor = (status: string) => {
@@ -141,34 +64,6 @@ export default function Dashboard() {
     return map[status] || status;
   };
 
-  const filteredProjects = projects
-    .filter(p => {
-      if (searchQuery) {
-        const q = searchQuery.toLowerCase();
-        if (!p.name.toLowerCase().includes(q) && !(p.bundle_id && p.bundle_id.toLowerCase().includes(q))) return false;
-      }
-      if (statusFilter !== 'all' && p.status !== statusFilter) return false;
-      return true;
-    })
-    .sort((a, b) => {
-      switch (sortBy) {
-        case 'name_asc': return a.name.localeCompare(b.name);
-        case 'name_desc': return b.name.localeCompare(a.name);
-        case 'date_newest': return (b.id || 0) - (a.id || 0);
-        case 'date_oldest': return (a.id || 0) - (b.id || 0);
-        case 'status': return a.status.localeCompare(b.status);
-        default: return 0;
-      }
-    });
-
-  const sortLabels: Record<SortOption, string> = {
-    name_asc: 'Name (A-Z)', name_desc: 'Name (Z-A)', date_newest: 'Newest First', date_oldest: 'Oldest First', status: 'By Status',
-  };
-  const filterLabels: Record<StatusFilter, string> = {
-    all: 'All', setup: 'Setup', questionnaire_done: 'Questionnaire Done', listing_generated: 'Listing Ready',
-    pipeline_running: 'Pipeline Running', submitted: 'Complete', live: 'Live', pipeline_failed: 'Failed',
-  };
-
   if (view === 'setup') {
     return <SetupWizard onBack={() => { setView('dashboard'); loadData(); }} />;
   }
@@ -178,253 +73,42 @@ export default function Dashboard() {
   }
 
   if (view === 'helixa') {
-    return <HelixaModule onBack={() => { setView('dashboard'); loadData(); }} onBuildApp={(ideaId) => { setPlanterIdeaId(ideaId); setView('planter'); }} />;
+    return <HelixaModule onBack={() => { setView('dashboard'); loadData(); }} />;
   }
 
-  if (view === 'planter') {
-    return <Planter onBack={() => { setPlanterIdeaId(null); setView('dashboard'); loadData(); }} initialIdeaId={planterIdeaId} />;
+  if (view === 'devbrain') {
+    return <DevBrainModule onBack={() => { setView('dashboard'); loadData(); }} />;
   }
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-950 via-blue-950 to-slate-950">
-        <div className="w-full max-w-7xl mx-auto px-4 py-8 space-y-6 animate-pulse">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3"><div className="w-8 h-8 bg-slate-800 rounded-lg" /><div className="h-6 w-32 bg-slate-800 rounded" /></div>
-            <div className="h-8 w-20 bg-slate-800 rounded" />
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {[1,2,3,4].map(i => <div key={i} className="h-20 bg-slate-800/50 rounded-xl" />)}
-          </div>
-          <div className="grid md:grid-cols-2 gap-4"><div className="h-20 bg-slate-800/30 rounded-xl" /><div className="h-20 bg-slate-800/30 rounded-xl" /></div>
-          <div className="h-32 bg-slate-800/30 rounded-xl" />
-        </div>
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-950 via-blue-950 to-slate-950">
+        <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-blue-950 to-slate-950 pb-20 md:pb-0">
-      {showOnboarding && <OnboardingTour onComplete={() => setShowOnboarding(false)} />}
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-blue-950 to-slate-950">
       {/* Header */}
-      <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-sm sticky top-0 z-40">
+      <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-sm">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <img src="/logo.png" alt="Auto Launch" className="h-8 w-8" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
             <h1 className="text-xl font-bold text-white">Auto Launch</h1>
           </div>
-          <div className="flex items-center gap-2 relative">
-            <button
-              onClick={() => setShowProfileMenu(v => !v)}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-slate-700/50 transition-colors"
-            >
-              <span className="text-sm text-slate-400 hidden sm:inline truncate max-w-48">{user?.email}</span>
-              <span className="text-slate-500 text-xs">▾</span>
-            </button>
-            {showProfileMenu && (
-              <div className="absolute right-0 top-10 z-50 bg-slate-800 border border-slate-700 rounded-xl shadow-xl w-48 py-1" onClick={() => setShowProfileMenu(false)}>
-                <button
-                  onClick={() => setShowChangePassword(true)}
-                  className="w-full text-left px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-700 flex items-center gap-2"
-                >
-                  🔑 Zmeniť heslo
-                </button>
-                <div className="border-t border-slate-700 my-1" />
-                <button
-                  onClick={logout}
-                  className="w-full text-left px-4 py-2.5 text-sm text-red-400 hover:bg-slate-700 flex items-center gap-2"
-                >
-                  <LogOut className="w-3.5 h-3.5" /> Odhlásiť
-                </button>
-              </div>
-            )}
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-slate-400">{user?.email}</span>
+            <Button variant="ghost" size="sm" onClick={logout} className="text-slate-400 hover:text-white">
+              <LogOut className="w-4 h-4" />
+            </Button>
           </div>
-
-          {/* Change Password Modal */}
-          {showChangePassword && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowChangePassword(false)}>
-              <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-sm mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
-                <h3 className="text-lg font-bold text-white mb-4">🔑 Zmena hesla</h3>
-                {cpSuccess ? (
-                  <div className="text-green-400 text-center py-4">✓ Heslo úspešne zmenené!</div>
-                ) : (
-                  <>
-                    <div className="space-y-3 mb-4">
-                      <input
-                        type="password" placeholder="Aktuálne heslo" value={cpCurrent}
-                        onChange={e => setCpCurrent(e.target.value)}
-                        className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-blue-500"
-                      />
-                      <input
-                        type="password" placeholder="Nové heslo" value={cpNew}
-                        onChange={e => setCpNew(e.target.value)}
-                        className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-blue-500"
-                      />
-                      <input
-                        type="password" placeholder="Potvrď nové heslo" value={cpConfirm}
-                        onChange={e => setCpConfirm(e.target.value)}
-                        onKeyDown={e => e.key==='Enter' && handleChangePassword()}
-                        className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 outline-none focus:border-blue-500"
-                      />
-                      {cpError && <p className="text-red-400 text-xs">{cpError}</p>}
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={handleChangePassword} disabled={cpLoading}
-                        className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium py-2.5 rounded-lg transition-colors"
-                      >
-                        {cpLoading ? 'Ukladám...' : 'Zmeniť heslo'}
-                      </button>
-                      <button
-                        onClick={() => { setShowChangePassword(false); setCpError(''); }}
-                        className="px-4 bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm rounded-lg transition-colors"
-                      >
-                        Zrušiť
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 py-6 md:py-8">
-        {/* Quick Launch CTA */}
-        <Card className="bg-gradient-to-r from-blue-600/20 to-indigo-600/20 border-blue-500/30 mb-6 md:mb-8">
-          <CardContent className="p-4 md:p-6">
-            <div className="flex items-center justify-between flex-wrap gap-4">
-              <div className="flex items-center gap-4">
-                <div className="p-3 bg-blue-500/20 rounded-xl"><Rocket className="w-8 h-8 text-blue-400" /></div>
-                <div>
-                  <h2 className="text-lg md:text-xl font-bold text-white">Launch a New App</h2>
-                  <p className="text-sm text-blue-300/70">From idea to App Store in one click</p>
-                </div>
-              </div>
-              <Tooltip content="Create and launch a new application">
-                <Button onClick={() => { setSelectedProjectId(null); setView('project'); }} className="bg-blue-600 hover:bg-blue-700 text-white h-12 px-6 text-base font-semibold">
-                  <Plus className="w-5 h-5 mr-2" /> New App
-                </Button>
-              </Tooltip>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* App Pipeline Tracker */}
-        {projects.length > 0 && (() => {
-          const STAGES = ['setup', 'questionnaire_done', 'listing_generated', 'pipeline_running', 'submitted', 'live'];
-          const STAGE_LABELS = ['Setup', 'Dotazník', 'Listing', 'Build', 'Submit', 'Live'];
-          const STAGE_ICONS = ['⚙️', '📋', '📝', '🏗️', '📤', '🟢'];
-          const stageIndex = (status: string) => Math.max(0, STAGES.indexOf(status));
-
-          const platformIcon = (platform: string) => {
-            if (platform === 'ios') return '🍎';
-            if (platform === 'android') return '🤖';
-            return '📱';
-          };
-
-          const actionButton = (p: Project) => {
-            const s = p.status;
-            if (s === 'setup') return (
-              <button onClick={e => { e.stopPropagation(); openProject(p.id); }}
-                className="shrink-0 px-2.5 py-1 text-[10px] font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors whitespace-nowrap">
-                Vyplniť dotazník
-              </button>
-            );
-            if (s === 'questionnaire_done') return (
-              <button onClick={e => { e.stopPropagation(); openProject(p.id); }}
-                className="shrink-0 px-2.5 py-1 text-[10px] font-semibold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors whitespace-nowrap">
-                Generovať listing
-              </button>
-            );
-            if (s === 'listing_generated') return (
-              <button onClick={e => { e.stopPropagation(); openProject(p.id); }}
-                className="shrink-0 px-2.5 py-1 text-[10px] font-semibold bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors whitespace-nowrap">
-                Spustiť build
-              </button>
-            );
-            if (s === 'pipeline_running') return (
-              <span className="shrink-0 px-2.5 py-1 text-[10px] font-semibold bg-blue-500/20 text-blue-300 rounded-lg animate-pulse whitespace-nowrap">
-                ⏳ Builduje sa...
-              </span>
-            );
-            if (s === 'submitted') return (
-              <span className="shrink-0 px-2.5 py-1 text-[10px] font-semibold bg-green-500/20 text-green-300 rounded-lg whitespace-nowrap">
-                ✓ Odoslané
-              </span>
-            );
-            if (s === 'pipeline_failed') return (
-              <button onClick={e => { e.stopPropagation(); openProject(p.id); }}
-                className="shrink-0 px-2.5 py-1 text-[10px] font-semibold bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors whitespace-nowrap">
-                🔧 Retry
-              </button>
-            );
-            if (s === 'live') return (
-              <span className="shrink-0 px-2.5 py-1 text-[10px] font-semibold bg-green-500/20 text-green-300 rounded-lg animate-pulse whitespace-nowrap">
-                🟢 Live
-              </span>
-            );
-            return null;
-          };
-
-          return (
-            <div className="bg-slate-900/30 rounded-xl p-4 mb-6 border border-slate-800/50">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-wide">Pipeline Tracker</h2>
-                <span className="text-xs text-slate-600">{projects.length} appiek</span>
-              </div>
-              {projects.map(p => {
-                const current = stageIndex(p.status);
-                return (
-                  <div key={p.id}
-                    className="flex items-center gap-3 py-2.5 border-b border-slate-800/50 last:border-0 cursor-pointer hover:bg-slate-800/20 rounded-lg px-1 transition-colors"
-                    onClick={() => openProject(p.id)}>
-                    {/* Left: icon + name + bundle_id */}
-                    <div className="flex items-center gap-2 min-w-0 w-28 shrink-0">
-                      <span className="text-base leading-none">{platformIcon(p.platform)}</span>
-                      <div className="min-w-0">
-                        <p className="text-xs font-semibold text-white truncate">{p.name}</p>
-                        {p.bundle_id && <p className="text-[9px] text-slate-500 truncate">{p.bundle_id}</p>}
-                      </div>
-                    </div>
-                    {/* Center: pipeline strip */}
-                    <div className="hidden sm:flex items-center flex-1 overflow-x-auto">
-                      {STAGES.map((stage, i) => {
-                        const isDone = i < current;
-                        const isCurrent = i === current;
-                        const isFuture = i > current;
-                        return (
-                          <div key={stage} className="flex items-center">
-                            <div className={`px-1.5 py-0.5 rounded text-[9px] font-medium whitespace-nowrap ${
-                              isCurrent
-                                ? 'bg-blue-600 text-white'
-                                : isDone
-                                ? 'text-green-400'
-                                : 'text-slate-600'
-                            }`}>
-                              <span className={isDone ? 'line-through' : ''}>{STAGE_ICONS[i]} {STAGE_LABELS[i]}</span>
-                            </div>
-                            {i < STAGES.length - 1 && (
-                              <span className={`text-[9px] mx-0.5 ${isDone ? 'text-green-700' : 'text-slate-700'}`}>——</span>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                    {/* Right: action button */}
-                    <div className="shrink-0 ml-auto">
-                      {actionButton(p)}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })()}
-
+      <main className="max-w-7xl mx-auto px-4 py-8">
         {/* Stats Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4 mb-6 md:mb-8">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
           <Card className="bg-slate-900/50 border-slate-800">
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
@@ -471,9 +155,10 @@ export default function Dashboard() {
           </Card>
         </div>
 
-        {/* HELIXA + Planter Modules - hidden on mobile (accessed via bottom nav) */}
-        <div className="hidden md:grid md:grid-cols-2 gap-4 mb-8">
-          <Card className="bg-indigo-900/20 border-indigo-800/30 cursor-pointer hover:border-indigo-600 transition-colors" title="Capture and score app ideas with AI" onClick={() => setView('helixa')}>
+        {/* Module Cards */}
+        <div className="grid md:grid-cols-2 gap-4 mb-8">
+          {/* HELIXA Module */}
+          <Card className="bg-indigo-900/20 border-indigo-800/30 cursor-pointer hover:border-indigo-600 transition-colors" onClick={() => setView('helixa')}>
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -491,20 +176,22 @@ export default function Dashboard() {
               </div>
             </CardContent>
           </Card>
-          <Card className="bg-emerald-900/20 border-emerald-800/30 cursor-pointer hover:border-emerald-600 transition-colors" title="Build apps autonomously from ideas using Devin AI" onClick={() => setView('planter')}>
+
+          {/* DevBrain Module */}
+          <Card className="bg-emerald-900/20 border-emerald-800/30 cursor-pointer hover:border-emerald-600 transition-colors" onClick={() => setView('devbrain')}>
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="p-2 bg-emerald-500/20 rounded-lg">
-                    <Code2 className="w-6 h-6 text-emerald-400" />
+                    <Zap className="w-6 h-6 text-emerald-400" />
                   </div>
                   <div>
-                    <h3 className="text-white font-semibold">Planter</h3>
-                    <p className="text-xs text-emerald-400">Autonomous App Builder</p>
+                    <h3 className="text-white font-semibold">DevBrain</h3>
+                    <p className="text-xs text-emerald-400">AI Agent Memory & Session Manager</p>
                   </div>
                 </div>
                 <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700">
-                  <Code2 className="w-4 h-4 mr-1" /> Open
+                  <Zap className="w-4 h-4 mr-1" /> Open
                 </Button>
               </div>
             </CardContent>
@@ -518,11 +205,9 @@ export default function Dashboard() {
               <CardTitle className="text-white flex items-center gap-2">
                 <Shield className="w-5 h-5" /> Setup Status
               </CardTitle>
-              <Tooltip content="Configure API keys and signing certificates">
-                <Button size="sm" onClick={() => setView('setup')} className="bg-blue-600 hover:bg-blue-700">
-                  <Settings className="w-4 h-4 mr-1" /> Configure
-                </Button>
-              </Tooltip>
+              <Button size="sm" onClick={() => setView('setup')} className="bg-blue-600 hover:bg-blue-700">
+                <Settings className="w-4 h-4 mr-1" /> Configure
+              </Button>
             </div>
           </CardHeader>
           <CardContent>
@@ -545,74 +230,13 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        {/* Projects with sorting & filtering */}
-        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-          <h2 className="text-lg font-semibold text-white shrink-0">Projects</h2>
-          <div className="flex items-center gap-2 flex-1 justify-end flex-wrap">
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
-              <Input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search projects..." className="pl-8 h-8 w-40 bg-slate-800/50 border-slate-700 text-white text-xs" />
-            </div>
-            <div className="relative">
-              <Tooltip content="Sort projects">
-                <Button variant="outline" size="sm" className="border-slate-700 text-slate-300 h-8 text-xs gap-1" onClick={() => { setShowSortMenu(!showSortMenu); setShowFilterMenu(false); }}>
-                  <ArrowUpDown className="w-3.5 h-3.5" /> {sortLabels[sortBy]} <ChevronDown className="w-3 h-3" />
-                </Button>
-              </Tooltip>
-              {showSortMenu && (
-                <div className="absolute right-0 top-full mt-1 bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-30 py-1 min-w-36">
-                  {(Object.keys(sortLabels) as SortOption[]).map(opt => (
-                    <button key={opt} onClick={() => { setSortBy(opt); setShowSortMenu(false); }}
-                      className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${sortBy === opt ? 'text-blue-400 bg-blue-500/10' : 'text-slate-300 hover:bg-slate-700'}`}>
-                      {sortLabels[opt]}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="relative">
-              <Tooltip content="Filter by project status">
-                <Button variant="outline" size="sm" className={`border-slate-700 h-8 text-xs gap-1 ${statusFilter !== 'all' ? 'text-blue-400 border-blue-500/50' : 'text-slate-300'}`}
-                  onClick={() => { setShowFilterMenu(!showFilterMenu); setShowSortMenu(false); }}>
-                  <Filter className="w-3.5 h-3.5" /> {filterLabels[statusFilter]} <ChevronDown className="w-3 h-3" />
-                </Button>
-              </Tooltip>
-              {showFilterMenu && (
-                <div className="absolute right-0 top-full mt-1 bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-30 py-1 min-w-36">
-                  {(Object.keys(filterLabels) as StatusFilter[]).map(opt => (
-                    <button key={opt} onClick={() => { setStatusFilter(opt); setShowFilterMenu(false); }}
-                      className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${statusFilter === opt ? 'text-blue-400 bg-blue-500/10' : 'text-slate-300 hover:bg-slate-700'}`}>
-                      {filterLabels[opt]}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            <Tooltip content="Create and launch a new application">
-              <Button onClick={() => { setSelectedProjectId(null); setView('project'); }} size="sm" className="bg-blue-600 hover:bg-blue-700">
-                <Plus className="w-4 h-4 mr-1" /> <span className="hidden sm:inline">New App</span><span className="sm:hidden">New</span>
-              </Button>
-            </Tooltip>
-          </div>
+        {/* Projects */}
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-white">Your Projects</h2>
+          <Button onClick={() => { setSelectedProjectId(null); setView('project'); }} className="bg-blue-600 hover:bg-blue-700">
+            <Plus className="w-4 h-4 mr-1" /> New App Launch
+          </Button>
         </div>
-
-        {(statusFilter !== 'all' || searchQuery) && (
-          <div className="flex items-center gap-2 mb-3 flex-wrap">
-            {statusFilter !== 'all' && (
-              <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-500/10 border border-blue-500/30 rounded-full text-xs text-blue-300">
-                Status: {filterLabels[statusFilter]}
-                <button onClick={() => setStatusFilter('all')} className="hover:text-white"><X className="w-3 h-3" /></button>
-              </span>
-            )}
-            {searchQuery && (
-              <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-500/10 border border-blue-500/30 rounded-full text-xs text-blue-300">
-                Search: "{searchQuery}"
-                <button onClick={() => setSearchQuery('')} className="hover:text-white"><X className="w-3 h-3" /></button>
-              </span>
-            )}
-            <span className="text-xs text-slate-500">{filteredProjects.length} of {projects.length} projects</span>
-          </div>
-        )}
 
         {projects.length === 0 ? (
           <Card className="bg-slate-900/50 border-slate-800">
@@ -631,27 +255,18 @@ export default function Dashboard() {
             </CardContent>
           </Card>
         ) : (
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
-            {filteredProjects.map(p => (
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {projects.map(p => (
               <Card key={p.id} className="bg-slate-900/50 border-slate-800 hover:border-slate-700 cursor-pointer transition-colors" onClick={() => openProject(p.id)}>
                 <CardContent className="p-4">
                   <div className="flex items-start justify-between mb-3">
-                    <div className="flex-1 min-w-0 mr-2">
-                      <h3 className="font-semibold text-white truncate">{p.name}</h3>
+                    <div>
+                      <h3 className="font-semibold text-white">{p.name}</h3>
                       <p className="text-xs text-slate-400">{p.bundle_id || 'No bundle ID'}</p>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <Badge className={`${statusColor(p.status)} text-white text-xs`}>
-                        {statusLabel(p.status)}
-                      </Badge>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); setDeleteProjectId(p.id); setDeletePassword(''); setDeleteError(''); }}
-                        className="p-1 rounded hover:bg-red-500/20 text-slate-500 hover:text-red-400 transition-colors"
-                        title="Delete project"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
+                    <Badge className={`${statusColor(p.status)} text-white text-xs`}>
+                      {statusLabel(p.status)}
+                    </Badge>
                   </div>
                   <div className="flex items-center gap-4 text-xs text-slate-400">
                     <span>Platform: {p.platform}</span>
@@ -668,67 +283,6 @@ export default function Dashboard() {
           </div>
         )}
       </main>
-
-      {/* Mobile Bottom Tab Navigation */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-slate-900/95 backdrop-blur-lg border-t border-slate-800 z-50">
-        <div className="flex items-center justify-around py-2 px-2">
-          {[
-            { key: 'dashboard' as View, icon: LayoutDashboard, label: 'Home' },
-            { key: 'helixa' as View, icon: Brain, label: 'HELIXA' },
-            { key: 'planter' as View, icon: Code2, label: 'Planter' },
-            { key: 'setup' as View, icon: Settings, label: 'Setup' },
-          ].map(tab => {
-            const isActive = view === tab.key;
-            return (
-              <button key={tab.key} onClick={() => setView(tab.key)}
-                className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-lg transition-colors min-w-[60px] ${
-                  isActive ? 'text-blue-400 bg-blue-500/10' : 'text-slate-500 hover:text-slate-300'
-                }`}>
-                <tab.icon className={`w-5 h-5 ${isActive ? 'text-blue-400' : ''}`} />
-                <span className="text-[10px] font-medium">{tab.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </nav>
-
-      {/* Delete confirmation dialog */}
-      {(showSortMenu || showFilterMenu) && (
-        <div className="fixed inset-0 z-20" onClick={() => { setShowSortMenu(false); setShowFilterMenu(false); }} />
-      )}
-
-      {deleteProjectId !== null && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 max-w-sm w-full">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-white">Delete Project</h3>
-              <button onClick={() => { setDeleteProjectId(null); setDeletePassword(''); setDeleteError(''); }} className="text-slate-400 hover:text-white">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <p className="text-sm text-slate-400 mb-4">Enter your password to confirm deletion. This action cannot be undone.</p>
-            <Input
-              type="password"
-              placeholder="Your password"
-              value={deletePassword}
-              onChange={e => setDeletePassword(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleDeleteProject()}
-              className="bg-slate-800 border-slate-700 text-white mb-3"
-              autoFocus
-            />
-            {deleteError && <p className="text-red-400 text-sm mb-3">{deleteError}</p>}
-            <div className="flex gap-2">
-              <Button variant="outline" className="flex-1 border-slate-700 text-slate-300" onClick={() => { setDeleteProjectId(null); setDeletePassword(''); setDeleteError(''); }}>
-                Cancel
-              </Button>
-              <Button className="flex-1 bg-red-600 hover:bg-red-700 text-white" onClick={handleDeleteProject} disabled={!deletePassword || deleting}>
-                {deleting ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Trash2 className="w-4 h-4 mr-1" />}
-                Delete
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

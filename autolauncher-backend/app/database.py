@@ -1,11 +1,10 @@
 import aiosqlite
 import os
-import bcrypt
 
 DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/app.db")
 
-# Fallback to local path for development only if /data doesn't exist at all
-if not os.path.exists("/data") and DATABASE_PATH == "/data/app.db":
+# Fallback to local path for development
+if not os.path.exists(os.path.dirname(DATABASE_PATH)) and DATABASE_PATH.startswith("/data"):
     DATABASE_PATH = os.path.join(os.path.dirname(__file__), "..", "app.db")
 
 async def get_db():
@@ -246,33 +245,110 @@ async def init_db():
             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         );
 
-        CREATE TABLE IF NOT EXISTS project_settings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER NOT NULL,
-            key TEXT NOT NULL,
-            value TEXT DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(project_id, key),
-            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS planter_sessions (
+        -- DevBrain Tables
+        CREATE TABLE IF NOT EXISTS devbrain_profile (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
-            idea_id INTEGER,
-            idea_name TEXT NOT NULL DEFAULT '',
-            devin_session_id TEXT NOT NULL DEFAULT '',
-            session_url TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'running',
-            title TEXT NOT NULL DEFAULT '',
-            pr_url TEXT NOT NULL DEFAULT '',
-            frontend_url TEXT NOT NULL DEFAULT '',
-            backend_url TEXT NOT NULL DEFAULT '',
-            repo_url TEXT NOT NULL DEFAULT '',
+            preferred_tech_stack TEXT DEFAULT '[]',
+            coding_conventions TEXT DEFAULT '[]',
+            architectural_preferences TEXT DEFAULT '[]',
+            communication_style TEXT DEFAULT '',
+            frustrations TEXT DEFAULT '[]',
+            what_works_well TEXT DEFAULT '[]',
+            work_patterns TEXT DEFAULT '[]',
+            key_principles TEXT DEFAULT '[]',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id),
             FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS devbrain_apps (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            status TEXT DEFAULT 'idea',
+            tech_stack TEXT DEFAULT '[]',
+            requirements TEXT DEFAULT '[]',
+            related_sessions TEXT DEFAULT '[]',
+            session_count INTEGER DEFAULT 0,
+            priority TEXT DEFAULT 'low',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, name),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS devbrain_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            date TEXT DEFAULT '',
+            session_id TEXT DEFAULT '',
+            project TEXT DEFAULT '',
+            decision TEXT DEFAULT '',
+            context TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, date, session_id, project, decision),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS devbrain_corrections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            date TEXT DEFAULT '',
+            session_id TEXT DEFAULT '',
+            project TEXT DEFAULT '',
+            correction TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, date, session_id, project, correction),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS devbrain_sessions_metadata (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            devin_session_id TEXT NOT NULL,
+            date TEXT DEFAULT '',
+            title TEXT DEFAULT '',
+            project TEXT DEFAULT '',
+            goals TEXT DEFAULT '[]',
+            decisions TEXT DEFAULT '[]',
+            corrections TEXT DEFAULT '[]',
+            preferences TEXT DEFAULT '[]',
+            outcome TEXT DEFAULT '',
+            outcome_detail TEXT DEFAULT '',
+            tech_stack TEXT DEFAULT '[]',
+            app_requirements TEXT DEFAULT '[]',
+            patterns TEXT DEFAULT '[]',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, devin_session_id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS devbrain_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            devin_session_id TEXT NOT NULL,
+            app_name TEXT DEFAULT '',
+            original_prompt TEXT DEFAULT '',
+            enriched_prompt TEXT DEFAULT '',
+            status TEXT DEFAULT 'created',
+            auto_monitor INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_checked_at TIMESTAMP,
+            UNIQUE(user_id, devin_session_id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS devbrain_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            action_type TEXT NOT NULL DEFAULT 'comment',
+            content TEXT DEFAULT '',
+            devin_response TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (session_id) REFERENCES devbrain_sessions(id) ON DELETE CASCADE
         );
     """)
 
@@ -285,15 +361,6 @@ async def init_db():
             await db.execute(col_sql)
         except Exception:
             pass  # Column already exists
-
-    # Seed default user if not exists (ensures user survives deploys without persistent volume)
-    cursor = await db.execute("SELECT id FROM users WHERE email = ?", ("marcel.kamon@gmail.com",))
-    if not await cursor.fetchone():
-        pw_hash = bcrypt.hashpw("Admin123!".encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-        await db.execute(
-            "INSERT INTO users (email, password_hash, full_name, created_at) VALUES (?, ?, ?, datetime('now'))",
-            ("marcel.kamon@gmail.com", pw_hash, "Marcel Kamon")
-        )
 
     await db.commit()
     await db.close()

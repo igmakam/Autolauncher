@@ -1,20 +1,16 @@
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File, Form, Request
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from collections import defaultdict
 import aiosqlite
 import json
 import os
-import time
 from dotenv import load_dotenv
 
 load_dotenv()
 
 from app.database import get_db, init_db, DATABASE_PATH
-from app.auth import hash_password, verify_password, create_access_token, get_current_user, create_guest_token, decode_guest_token, GUEST_LINK_EXPIRE_HOURS
+from app.auth import hash_password, verify_password, create_access_token, get_current_user
 from app.models import (
     UserRegister, UserLogin, TokenResponse, UserResponse,
     CredentialSave, CredentialStatus,
@@ -24,10 +20,9 @@ from app.models import (
     PipelineStepResponse, PipelineRunResponse,
     DashboardResponse, SettingUpdate
 )
-from app.ai_engine import get_questionnaire_questions, generate_store_listing, generate_localization, generate_additional_growth_ideas, generate_launch_strategy, generate_campaign_content, analyze_setup_feedback
+from app.ai_engine import get_questionnaire_questions, generate_store_listing, generate_localization, generate_additional_growth_ideas, generate_launch_strategy, generate_campaign_content, analyze_setup_feedback, get_openai_client
 from app.pipeline import create_pipeline_run, get_pipeline_run, get_latest_pipeline_run, run_pipeline, PIPELINE_STEPS, pipeline_monitor_task
 from app.store_api import create_apple_client, create_google_client
-from app import watchdog, task_queue
 import asyncio
 import logging
 
@@ -40,175 +35,35 @@ async def lifespan(app: FastAPI):
     # Start background pipeline monitor
     monitor = asyncio.create_task(pipeline_monitor_task(DATABASE_PATH))
     logger.info("Background pipeline monitor started")
-    # Start watchdog + queue recovery
-    wd = asyncio.create_task(watchdog.watchdog_loop())
-    stale = asyncio.create_task(task_queue.stale_task_recovery_loop())
-    logger.info("Watchdog + task queue recovery started")
     yield
     monitor.cancel()
-    wd.cancel()
-    stale.cancel()
-    for t in [monitor, wd, stale]:
-        try:
-            await t
-        except asyncio.CancelledError:
-            pass
-    logger.info("Background tasks stopped")
+    try:
+        await monitor
+    except asyncio.CancelledError:
+        pass
+    logger.info("Background pipeline monitor stopped")
+    # Stop DevBrain monitor if running
+    if _devbrain_manager is not None:
+        _devbrain_manager.stop_monitor()
+        logger.info("DevBrain monitor stopped")
 
 app = FastAPI(title="Auto Launch API", lifespan=lifespan)
 
-# ---------------------------------------------------------------------------
-# Security: CORS – restrict to known frontend origins
-# ---------------------------------------------------------------------------
-_CORS_ORIGINS_ENV = os.getenv("CORS_ORIGINS", "")
-ALLOWED_ORIGINS = [
-    o.strip()
-    for o in _CORS_ORIGINS_ENV.split(",")
-    if o.strip()
-] if _CORS_ORIGINS_ENV else [
-    # Development
-    "http://localhost:5173",
-    "http://localhost:3000",
-    # Production
-    "https://autolauncher.vercel.app",
-    "https://launch-readiness-audit-app-chlckr3f.devinapps.com",
-]
-
-
-# ---------------------------------------------------------------------------
-# Security: Rate Limiting – 120 requests / minute per IP
-# ---------------------------------------------------------------------------
-class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Simple in-memory sliding-window rate limiter."""
-
-    def __init__(self, app, max_requests: int = 120, window_seconds: int = 60):
-        super().__init__(app)
-        self.max_requests = max_requests
-        self.window = window_seconds
-        self._hits: dict[str, list[float]] = defaultdict(list)
-
-    async def dispatch(self, request: Request, call_next):
-        # Skip rate limiting for CORS preflight requests
-        if request.method == "OPTIONS":
-            return await call_next(request)
-        client_ip = request.client.host if request.client else "unknown"
-        now = time.time()
-        # Prune old entries and evict stale IPs to prevent unbounded memory growth
-        hits = [t for t in self._hits[client_ip] if t > now - self.window]
-        if not hits:
-            self._hits.pop(client_ip, None)
-            hits = []
-        else:
-            self._hits[client_ip] = hits
-        if len(hits) >= self.max_requests:
-            return Response(
-                content='{"detail":"Rate limit exceeded. Try again later."}',
-                status_code=429,
-                media_type="application/json",
-            )
-        self._hits[client_ip].append(now)
-        return await call_next(request)
-
-
-app.add_middleware(RateLimitMiddleware, max_requests=120, window_seconds=60)
-
-
-# ---------------------------------------------------------------------------
-# Security: Response Headers (HSTS, X-Content-Type, X-Frame, CSP)
-# ---------------------------------------------------------------------------
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["X-XSS-Protection"] = "1; mode=block"
-        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Strict-Transport-Security"] = (
-            "max-age=63072000; includeSubDomains; preload"
-        )
-        return response
-
-
-app.add_middleware(SecurityHeadersMiddleware)
-
-# CORS must be added LAST so it is the outermost middleware (Starlette
-# processes in reverse add-order).  This ensures that ALL responses —
-# including 429 from the rate limiter — carry the proper CORS headers.
+# Disable CORS. Do not remove this for full-stack development.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["*"],  # Allows all origins
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
 )
-
-@app.get("/")
-async def root():
-    return {
-        "app": "AutoLauncher",
-        "version": "1.0.0",
-        "docs": "/docs",
-        "health": "/healthz",
-    }
-
 
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok"}
 
+
 # ==================== AUTH ====================
-
-
-@app.post("/api/auth/guest-link")
-async def generate_guest_link(
-    current_user: dict = Depends(get_current_user),
-    db: aiosqlite.Connection = Depends(get_db)
-):
-    """Generate a guest access link valid for 48 hours. Requires auth (owner only)."""
-    user_id = int(current_user["sub"])
-    email = current_user["email"]
-    guest_token = create_guest_token(user_id, email)
-    return {
-        "guest_token": guest_token,
-        "expires_in_hours": GUEST_LINK_EXPIRE_HOURS,
-    }
-
-
-@app.post("/api/auth/guest-access")
-async def guest_access(
-    body: dict,
-    db: aiosqlite.Connection = Depends(get_db)
-):
-    """Exchange a guest token for a real access token (no login needed)."""
-    guest_token = body.get("guest_token", "")
-    if not guest_token:
-        raise HTTPException(status_code=400, detail="guest_token required")
-
-    payload = decode_guest_token(guest_token)
-    user_id = int(payload["sub"])
-    email = payload["email"]
-
-    # Verify the user still exists
-    cursor = await db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
-    row = await cursor.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="User not found")
-    user = dict(row)
-
-    # Issue a normal access token (24h)
-    access_token = create_access_token(user_id, email)
-
-    return TokenResponse(
-        access_token=access_token,
-        user=UserResponse(
-            id=user["id"],
-            email=user["email"],
-            full_name=user["full_name"] or "",
-            avatar_url=user["avatar_url"] or "",
-            created_at=user["created_at"] or ""
-        )
-    )
-
 
 @app.post("/api/auth/register", response_model=TokenResponse)
 async def register(user: UserRegister, db: aiosqlite.Connection = Depends(get_db)):
@@ -288,36 +143,6 @@ async def get_me(
         avatar_url=user["avatar_url"] or "",
         created_at=user["created_at"] or ""
     )
-
-
-@app.post("/api/auth/change-password")
-async def change_password(
-    body: dict,
-    current_user: dict = Depends(get_current_user),
-    db: aiosqlite.Connection = Depends(get_db)
-):
-    from app.auth import verify_password, hash_password
-    user_id = int(current_user["sub"])
-    current_pw = body.get("current_password", "")
-    new_pw = body.get("new_password", "")
-
-    if not current_pw or not new_pw:
-        raise HTTPException(status_code=400, detail="Both current_password and new_password are required")
-    if len(new_pw) < 8:
-        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
-
-    cursor = await db.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,))
-    row = await cursor.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    if not verify_password(current_pw, dict(row)["password_hash"]):
-        raise HTTPException(status_code=401, detail="Current password is incorrect")
-
-    new_hash = hash_password(new_pw)
-    await db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user_id))
-    await db.commit()
-    return {"ok": True, "message": "Password changed successfully"}
 
 
 # ==================== CREDENTIALS ====================
@@ -556,25 +381,13 @@ async def update_project(
     return await get_project(project_id, current_user, db)
 
 
-from pydantic import BaseModel as PydanticBaseModel
-
-class ProjectDeleteRequest(PydanticBaseModel):
-    password: str
-
-@app.post("/api/projects/{project_id}/delete")
+@app.delete("/api/projects/{project_id}")
 async def delete_project(
     project_id: int,
-    body: ProjectDeleteRequest,
     current_user: dict = Depends(get_current_user),
     db: aiosqlite.Connection = Depends(get_db)
 ):
     user_id = int(current_user["sub"])
-    # Verify password
-    cursor = await db.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,))
-    user_row = await cursor.fetchone()
-    if not user_row or not verify_password(body.password, user_row[0]):
-        raise HTTPException(status_code=403, detail="Incorrect password")
-    # Verify project belongs to user
     cursor = await db.execute("SELECT id FROM projects WHERE id = ? AND user_id = ?", (project_id, user_id))
     if not await cursor.fetchone():
         raise HTTPException(status_code=404, detail="Project not found")
@@ -1084,234 +897,6 @@ async def start_pipeline(
     background_tasks.add_task(run_pipeline, db, run_id, project, creds)
 
     return {"message": "Pipeline started", "run_id": run_id}
-
-
-@app.post("/api/projects/{project_id}/apple-launch")
-async def apple_launch(
-    project_id: int,
-    background_tasks: BackgroundTasks,
-    current_user: dict = Depends(get_current_user),
-    db: aiosqlite.Connection = Depends(get_db)
-):
-    """Apple-only launch: validates credentials, finds app, updates listing, submits for review.
-    This is the real Apple App Store Connect API flow — no simulation."""
-    user_id = int(current_user["sub"])
-
-    # Get project
-    cursor = await db.execute("SELECT * FROM projects WHERE id = ? AND user_id = ?", (project_id, user_id))
-    row = await cursor.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Project not found")
-    project = dict(row)
-
-    # Get Apple credentials
-    cursor = await db.execute(
-        "SELECT credential_data FROM credentials WHERE user_id = ? AND credential_type = 'apple'",
-        (user_id,))
-    apple_row = await cursor.fetchone()
-    if not apple_row:
-        raise HTTPException(status_code=400, detail="Apple API credentials not configured. Go to Setup Wizard → Apple Developer step.")
-    apple_creds = json.loads(apple_row["credential_data"])
-
-    if not (apple_creds.get("key_id") and apple_creds.get("private_key") and apple_creds.get("issuer_id")):
-        raise HTTPException(status_code=400, detail="Apple credentials incomplete — need Key ID, Issuer ID, and Private Key (.p8)")
-
-    # Create Apple client
-    client = create_apple_client(apple_creds)
-    if not client:
-        raise HTTPException(status_code=500, detail="Failed to create Apple API client")
-
-    # Get listing data
-    cursor = await db.execute(
-        "SELECT * FROM store_listings WHERE project_id = ? AND platform = 'ios'", (project_id,))
-    listing_row = await cursor.fetchone()
-    if not listing_row:
-        # Try any platform listing
-        cursor = await db.execute(
-            "SELECT * FROM store_listings WHERE project_id = ? LIMIT 1", (project_id,))
-        listing_row = await cursor.fetchone()
-    if not listing_row:
-        raise HTTPException(status_code=400, detail="No store listing found. Generate one first via AI Listing tab.")
-    listing_data = dict(listing_row)
-
-    bundle_id = project.get("bundle_id", "")
-    if not bundle_id:
-        raise HTTPException(status_code=400, detail="Bundle ID not set for this project. Update project settings.")
-
-    # Run the Apple launch flow in background
-    async def _run_apple_launch():
-        steps_log = []
-        try:
-            # Update project status
-            await db.execute(
-                "UPDATE projects SET status = 'apple_launch_running', updated_at = ? WHERE id = ?",
-                (datetime.now(timezone.utc).isoformat(), project_id))
-            await db.commit()
-
-            # Step 1: Validate credentials
-            val = await client.validate_credentials()
-            steps_log.append({"step": "validate_credentials", "success": val.get("valid", False), "detail": val.get("message", "")})
-            if not val.get("valid"):
-                await _save_apple_launch_result(db, project_id, "failed", steps_log, "Credential validation failed")
-                return
-
-            # Step 2: Find app by bundle ID
-            find_result = await client.find_app(bundle_id)
-            steps_log.append({"step": "find_app", "success": find_result.get("found", False), "detail": find_result})
-            if not find_result.get("found"):
-                await _save_apple_launch_result(db, project_id, "failed", steps_log,
-                    f"App with bundle ID '{bundle_id}' not found in App Store Connect. Register the app first.")
-                return
-            app_id = find_result["app_id"]
-
-            # Step 3: Get or create version
-            version_result = await client.get_or_create_version(app_id)
-            steps_log.append({"step": "get_version", "success": version_result.get("success", False), "detail": version_result})
-            if not version_result.get("success"):
-                await _save_apple_launch_result(db, project_id, "failed", steps_log,
-                    f"Failed to get/create version: {version_result.get('error', 'unknown')}")
-                return
-            version_id = version_result["version_id"]
-
-            # Step 4: Update listing (description, keywords, name, subtitle)
-            listing_update = await client.full_listing_update(app_id, listing_data)
-            listing_success = listing_update.get("success", False)
-            steps_log.append({"step": "update_listing", "success": listing_success, "detail": listing_update})
-
-            # Step 5: Try to submit for review
-            submit_result = await client.submit_for_review(version_id)
-            steps_log.append({"step": "submit_for_review", "success": submit_result.get("success", False), "detail": submit_result})
-
-            # Step 6: Get current review status
-            status_result = await client.get_review_status(app_id)
-            steps_log.append({"step": "review_status", "success": True, "detail": status_result})
-
-            # Determine overall result
-            if submit_result.get("success"):
-                final_status = "submitted"
-                final_msg = f"App submitted for Apple review! Version: {version_result.get('version_string', '?')}, State: {status_result.get('state', '?')}"
-            elif listing_success:
-                final_status = "listing_updated"
-                final_msg = f"Listing updated on App Store Connect. Submit for review requires a binary upload first. Version: {version_result.get('version_string', '?')}"
-            else:
-                final_status = "partial"
-                final_msg = "Some steps completed. Check details for errors."
-
-            await _save_apple_launch_result(db, project_id, final_status, steps_log, final_msg)
-
-        except Exception as e:
-            logger.error(f"Apple launch error for project {project_id}: {e}")
-            steps_log.append({"step": "error", "success": False, "detail": str(e)})
-            await _save_apple_launch_result(db, project_id, "failed", steps_log, str(e))
-
-    background_tasks.add_task(_run_apple_launch)
-
-    return {"message": "Apple launch started", "project_id": project_id}
-
-
-async def _save_apple_launch_result(db: aiosqlite.Connection, project_id: int, status: str, steps: list, message: str):
-    """Save Apple launch result to database."""
-    try:
-        # Store result as JSON in a settings-like table, or update project
-        result_data = json.dumps({"status": status, "steps": steps, "message": message, "timestamp": datetime.now(timezone.utc).isoformat()})
-
-        # Check if apple_launch_result exists
-        cursor = await db.execute(
-            "SELECT id FROM project_settings WHERE project_id = ? AND key = 'apple_launch_result'",
-            (project_id,))
-        existing = await cursor.fetchone()
-        if existing:
-            await db.execute(
-                "UPDATE project_settings SET value = ? WHERE project_id = ? AND key = 'apple_launch_result'",
-                (result_data, project_id))
-        else:
-            await db.execute(
-                "INSERT INTO project_settings (project_id, key, value) VALUES (?, 'apple_launch_result', ?)",
-                (project_id, result_data))
-
-        # Update project status
-        project_status = "submitted" if status == "submitted" else ("listing_updated" if status == "listing_updated" else "pipeline_failed")
-        await db.execute(
-            "UPDATE projects SET status = ?, updated_at = ? WHERE id = ?",
-            (project_status, datetime.now(timezone.utc).isoformat(), project_id))
-        await db.commit()
-    except Exception as e:
-        logger.error(f"Failed to save apple launch result: {e}")
-        try:
-            await db.commit()
-        except Exception:
-            pass
-
-
-@app.get("/api/projects/{project_id}/apple-launch/status")
-async def get_apple_launch_status(
-    project_id: int,
-    current_user: dict = Depends(get_current_user),
-    db: aiosqlite.Connection = Depends(get_db)
-):
-    """Get the status of the Apple launch for a project."""
-    user_id = int(current_user["sub"])
-    cursor = await db.execute("SELECT id FROM projects WHERE id = ? AND user_id = ?", (project_id, user_id))
-    if not await cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    cursor = await db.execute(
-        "SELECT value FROM project_settings WHERE project_id = ? AND key = 'apple_launch_result'",
-        (project_id,))
-    row = await cursor.fetchone()
-    if not row:
-        return {"status": "not_started", "message": "Apple launch has not been started yet"}
-
-    return json.loads(row["value"])
-
-
-@app.get("/api/apple/apps")
-async def list_apple_apps(
-    current_user: dict = Depends(get_current_user),
-    db: aiosqlite.Connection = Depends(get_db)
-):
-    """List all apps in the user's App Store Connect account."""
-    user_id = int(current_user["sub"])
-    cursor = await db.execute(
-        "SELECT credential_data FROM credentials WHERE user_id = ? AND credential_type = 'apple'",
-        (user_id,))
-    apple_row = await cursor.fetchone()
-    if not apple_row:
-        raise HTTPException(status_code=400, detail="Apple API credentials not configured")
-
-    apple_creds = json.loads(apple_row["credential_data"])
-    client = create_apple_client(apple_creds)
-    if not client:
-        raise HTTPException(status_code=500, detail="Failed to create Apple API client")
-
-    result = await client.list_apps()
-    if result.get("success"):
-        return {"apps": result["apps"]}
-    raise HTTPException(status_code=502, detail=result.get("error", "Failed to list apps"))
-
-
-@app.get("/api/apple/apps/{app_id}/status")
-async def get_apple_app_review_status(
-    app_id: str,
-    current_user: dict = Depends(get_current_user),
-    db: aiosqlite.Connection = Depends(get_db)
-):
-    """Get review status for a specific Apple app."""
-    user_id = int(current_user["sub"])
-    cursor = await db.execute(
-        "SELECT credential_data FROM credentials WHERE user_id = ? AND credential_type = 'apple'",
-        (user_id,))
-    apple_row = await cursor.fetchone()
-    if not apple_row:
-        raise HTTPException(status_code=400, detail="Apple API credentials not configured")
-
-    apple_creds = json.loads(apple_row["credential_data"])
-    client = create_apple_client(apple_creds)
-    if not client:
-        raise HTTPException(status_code=500, detail="Failed to create Apple API client")
-
-    result = await client.get_review_status(app_id)
-    return result
 
 
 def compute_r_factor(run: dict) -> dict:
@@ -2390,297 +1975,600 @@ async def seed_data(
     return {"message": "Data seeded successfully", "results": results}
 
 
-# ==================== PLANTER (Devin API) ====================
+# ==================== DEVBRAIN AGENT ====================
 
-DEVIN_API_URL = "https://api.devin.ai/v1"
-DEVIN_API_KEY = os.getenv("DEVIN_API_KEY", "")
+from app.devbrain_models import (
+    MetadataImport, MetadataImportResponse,
+    DevBrainProfileResponse, DevBrainAppResponse,
+    DevBrainSessionCreate, DevBrainSessionResponse, DevBrainSessionDetail,
+    AgentActionResponse, MonitorStatusResponse,
+    SessionReviewRequest, SessionReviewResponse,
+)
+from app.devbrain_agent import DevBrainAgent
+from app.devbrain_session_manager import DevinAPIClient, DevBrainSessionManager
 
-
-class PlanterBuildRequest(PydanticBaseModel):
-    idea_id: int | None = None
-    idea_name: str = ""
-    idea_description: str = ""
-    tech_stack: dict | None = None
-    mvp_features: list[str] | None = None
-    custom_prompt: str = ""
-
-
-class PlanterMessageRequest(PydanticBaseModel):
-    message: str
+# Global session manager (initialized on first use)
+_devbrain_manager: DevBrainSessionManager | None = None
 
 
-@app.post("/api/planter/build")
-async def planter_build(
-    req: PlanterBuildRequest,
+def _get_devin_api_key() -> str:
+    """Get Devin API key from settings or environment."""
+    key = os.getenv("DEVIN_API_KEY", "")
+    return key
+
+
+def _get_session_manager() -> DevBrainSessionManager:
+    """Get or create the global session manager."""
+    global _devbrain_manager
+    api_key = _get_devin_api_key()
+    if _devbrain_manager is None:
+        client = DevinAPIClient(api_key)
+        _devbrain_manager = DevBrainSessionManager(client)
+    else:
+        # Update API key in case it changed
+        _devbrain_manager.devin_client.api_key = api_key
+        _devbrain_manager.devin_client.headers = {"Authorization": f"Bearer {api_key}"}
+    return _devbrain_manager
+
+
+@app.post("/api/devbrain/import", response_model=MetadataImportResponse)
+async def devbrain_import_metadata(
+    data: MetadataImport,
     current_user: dict = Depends(get_current_user),
-    db: aiosqlite.Connection = Depends(get_db)
+    db: aiosqlite.Connection = Depends(get_db),
 ):
-    """Create a new Devin session to autonomously build an app from a HELIXA idea."""
-    if not DEVIN_API_KEY:
-        raise HTTPException(status_code=500, detail="Devin API key not configured")
-
+    """Import extracted session metadata into DevBrain."""
     user_id = int(current_user["sub"])
-
-    # Build the prompt from idea data
-    idea_context = ""
-    if req.idea_id:
-        cursor = await db.execute(
-            "SELECT * FROM helixa_ideas WHERE id = ? AND user_id = ?",
-            (req.idea_id, user_id)
-        )
-        row = await cursor.fetchone()
-        if row:
-            idea = dict(row)
-            structured = json.loads(idea.get("structured_idea", "{}"))
-            build_brief = json.loads(idea.get("build_brief", "{}"))
-            idea_context = f"""
-App Name: {idea.get('idea_name', req.idea_name)}
-Problem: {structured.get('problem_statement', '')}
-Solution: {structured.get('proposed_solution', '')}
-Target Users: {structured.get('target_users', '')}
-Product Type: {idea.get('product_type', '')}
-Core Features: {json.dumps(build_brief.get('core_features', []))}
-MVP Scope: {json.dumps(build_brief.get('mvp_scope', []))}
-Suggested Tech Stack: {json.dumps(build_brief.get('suggested_tech_stack', {}))}
-User Flow: {json.dumps(build_brief.get('basic_user_flow', []))}
-Monetization: {build_brief.get('monetization_model', '')}
-"""
-
-    prompt = f"""Build a complete, production-ready web application based on this specification:
-
-{idea_context if idea_context else f"App: {req.idea_name}. Description: {req.idea_description}"}
-
-{f"Custom instructions: {req.custom_prompt}" if req.custom_prompt else ""}
-
-Requirements:
-1. Create a GitHub repo at github.com/igmakam/{req.idea_name.lower().replace(' ', '-').replace("'", '')}
-2. Build a React + Tailwind frontend and FastAPI backend
-3. Deploy frontend and backend to publicly accessible URLs
-4. Make sure the app is fully functional, not just a skeleton
-5. Test all endpoints and UI flows before marking as complete
-6. Share the deployed URLs when done
-
-Focus on building a polished, working MVP with real functionality."""
-
-    # Call Devin API to create session
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{DEVIN_API_URL}/sessions",
-                headers={
-                    "Authorization": f"Bearer {DEVIN_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={"prompt": prompt}
-            )
-            if resp.status_code != 200:
-                raise HTTPException(
-                    status_code=resp.status_code,
-                    detail=f"Devin API error: {resp.text}"
-                )
-            data = resp.json()
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Devin API timeout")
-
-    session_id = data.get("session_id", "")
-    session_url = data.get("url", f"https://app.devin.ai/sessions/{session_id.replace('devin-', '')}")
-
-    # Store the planter session in DB
     now = datetime.now(timezone.utc).isoformat()
+
+    # Import user profile (upsert — delete old for this user, insert new)
+    profile = data.user_profile
+    await db.execute("DELETE FROM devbrain_profile WHERE user_id = ?", (user_id,))
     await db.execute(
-        """INSERT INTO planter_sessions
-           (user_id, idea_id, idea_name, devin_session_id, session_url, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (user_id, req.idea_id, req.idea_name, session_id, session_url, "running", now, now)
+        """INSERT INTO devbrain_profile
+           (user_id, preferred_tech_stack, coding_conventions, architectural_preferences,
+            communication_style, frustrations, what_works_well, work_patterns,
+            key_principles, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            user_id,
+            json.dumps(profile.get("preferred_tech_stack", [])),
+            json.dumps(profile.get("coding_conventions", [])),
+            json.dumps(profile.get("architectural_preferences", [])),
+            profile.get("communication_style", ""),
+            json.dumps(profile.get("frustrations", [])),
+            json.dumps(profile.get("what_works_well", [])),
+            json.dumps(profile.get("work_patterns", [])),
+            json.dumps(profile.get("key_principles", [])),
+            now, now,
+        ),
     )
+
+    # Import apps catalog
+    apps_imported = 0
+    for app_data in data.apps_catalog:
+        name = app_data.get("name", "").strip()
+        if not name:
+            continue
+        await db.execute(
+            """INSERT INTO devbrain_apps
+               (user_id, name, description, status, tech_stack, requirements,
+                related_sessions, session_count, priority, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, name) DO UPDATE SET
+               description=excluded.description, status=excluded.status,
+               tech_stack=excluded.tech_stack, requirements=excluded.requirements,
+               related_sessions=excluded.related_sessions, session_count=excluded.session_count,
+               priority=excluded.priority""",
+            (
+                user_id,
+                name,
+                app_data.get("description", ""),
+                app_data.get("status", "idea"),
+                json.dumps(app_data.get("tech_stack", [])),
+                json.dumps(app_data.get("requirements", [])),
+                json.dumps(app_data.get("related_sessions", [])),
+                app_data.get("session_count", 0),
+                app_data.get("priority", "low"),
+                now,
+            ),
+        )
+        apps_imported += 1
+
+    # Import decisions log (dedup via UNIQUE constraint)
+    decisions_imported = 0
+    for decision in data.decisions_log:
+        await db.execute(
+            """INSERT INTO devbrain_decisions
+               (user_id, date, session_id, project, decision, context, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, date, session_id, project, decision) DO NOTHING""",
+            (
+                user_id,
+                decision.get("date", ""),
+                decision.get("session_id", ""),
+                decision.get("project", ""),
+                decision.get("decision", ""),
+                decision.get("context", ""),
+                now,
+            ),
+        )
+        decisions_imported += 1
+
+    # Import corrections log (dedup via UNIQUE constraint)
+    corrections_imported = 0
+    for correction in data.corrections_log:
+        await db.execute(
+            """INSERT INTO devbrain_corrections
+               (user_id, date, session_id, project, correction, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, date, session_id, project, correction) DO NOTHING""",
+            (
+                user_id,
+                correction.get("date", ""),
+                correction.get("session_id", ""),
+                correction.get("project", ""),
+                correction.get("correction", ""),
+                now,
+            ),
+        )
+        corrections_imported += 1
+
+    # Import sessions metadata
+    sessions_imported = 0
+    for session in data.sessions_metadata:
+        sid = session.get("session_id", "")
+        if not sid:
+            continue
+        await db.execute(
+            """INSERT INTO devbrain_sessions_metadata
+               (user_id, devin_session_id, date, title, project, goals, decisions,
+                corrections, preferences, outcome, outcome_detail,
+                tech_stack, app_requirements, patterns, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, devin_session_id) DO UPDATE SET
+               title=excluded.title, project=excluded.project,
+               goals=excluded.goals, decisions=excluded.decisions,
+               outcome=excluded.outcome""",
+            (
+                user_id,
+                sid,
+                session.get("date", ""),
+                session.get("title", ""),
+                session.get("project", ""),
+                json.dumps(session.get("goals", [])),
+                json.dumps(session.get("decisions", [])),
+                json.dumps(session.get("corrections", [])),
+                json.dumps(session.get("preferences", [])),
+                session.get("outcome", ""),
+                session.get("outcome_detail", ""),
+                json.dumps(session.get("tech_stack", [])),
+                json.dumps(session.get("app_requirements", [])),
+                json.dumps(session.get("patterns", [])),
+                now,
+            ),
+        )
+        sessions_imported += 1
+
     await db.commit()
 
-    return {
-        "session_id": session_id,
-        "session_url": session_url,
-        "status": "running",
-        "message": f"Devin session created for '{req.idea_name}'"
-    }
-
-
-@app.get("/api/planter/sessions")
-async def planter_list_sessions(
-    current_user: dict = Depends(get_current_user),
-    db: aiosqlite.Connection = Depends(get_db)
-):
-    """List all Planter build sessions for the current user."""
-    user_id = int(current_user["sub"])
-    cursor = await db.execute(
-        "SELECT * FROM planter_sessions WHERE user_id = ? ORDER BY created_at DESC",
-        (user_id,)
+    return MetadataImportResponse(
+        message="Metadata imported successfully",
+        apps_imported=apps_imported,
+        decisions_imported=decisions_imported,
+        corrections_imported=corrections_imported,
+        sessions_imported=sessions_imported,
     )
+
+
+@app.get("/api/devbrain/profile")
+async def devbrain_get_profile(
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get the DevBrain user profile."""
+    user_id = int(current_user["sub"])
+    cursor = await db.execute("SELECT * FROM devbrain_profile WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="No profile imported yet. Use POST /api/devbrain/import first.")
+    return dict(row)
+
+
+@app.get("/api/devbrain/apps")
+async def devbrain_get_apps(
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get all apps from the DevBrain catalog."""
+    user_id = int(current_user["sub"])
+    cursor = await db.execute("SELECT * FROM devbrain_apps WHERE user_id = ? ORDER BY session_count DESC, name", (user_id,))
     rows = await cursor.fetchall()
     return [dict(row) for row in rows]
 
 
-@app.get("/api/planter/session/{session_id}")
-async def planter_get_session(
-    session_id: str,
+@app.get("/api/devbrain/decisions")
+async def devbrain_get_decisions(
+    project: str = "",
     current_user: dict = Depends(get_current_user),
-    db: aiosqlite.Connection = Depends(get_db)
+    db: aiosqlite.Connection = Depends(get_db),
 ):
-    """Get status of a Planter build session from Devin API."""
-    if not DEVIN_API_KEY:
-        raise HTTPException(status_code=500, detail="Devin API key not configured")
+    """Get decisions log, optionally filtered by project."""
+    user_id = int(current_user["sub"])
+    if project:
+        cursor = await db.execute(
+            "SELECT * FROM devbrain_decisions WHERE user_id = ? AND project = ? ORDER BY date DESC", (user_id, project)
+        )
+    else:
+        cursor = await db.execute("SELECT * FROM devbrain_decisions WHERE user_id = ? ORDER BY date DESC", (user_id,))
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+@app.get("/api/devbrain/corrections")
+async def devbrain_get_corrections(
+    project: str = "",
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get corrections log, optionally filtered by project."""
+    user_id = int(current_user["sub"])
+    if project:
+        cursor = await db.execute(
+            "SELECT * FROM devbrain_corrections WHERE user_id = ? AND project = ? ORDER BY date DESC", (user_id, project)
+        )
+    else:
+        cursor = await db.execute("SELECT * FROM devbrain_corrections WHERE user_id = ? ORDER BY date DESC", (user_id,))
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+@app.get("/api/devbrain/sessions-metadata")
+async def devbrain_get_sessions_metadata(
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get all imported session metadata."""
+    user_id = int(current_user["sub"])
+    cursor = await db.execute("SELECT * FROM devbrain_sessions_metadata WHERE user_id = ? ORDER BY date DESC", (user_id,))
+    return [dict(row) for row in await cursor.fetchall()]
+
+
+@app.post("/api/devbrain/sessions", response_model=DevBrainSessionResponse)
+async def devbrain_create_session(
+    req: DevBrainSessionCreate,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Create a new Devin session with enriched context from DevBrain metadata."""
+    api_key = _get_devin_api_key()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="DEVIN_API_KEY not configured. Set it as environment variable.")
 
     user_id = int(current_user["sub"])
 
-    # Check ownership
-    cursor = await db.execute(
-        "SELECT * FROM planter_sessions WHERE devin_session_id = ? AND user_id = ?",
-        (session_id, user_id)
-    )
-    local_row = await cursor.fetchone()
-    if not local_row:
-        raise HTTPException(status_code=404, detail="Session not found")
+    # Load profile and apps for the agent
+    profile_cursor = await db.execute("SELECT * FROM devbrain_profile WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
+    profile_row = await profile_cursor.fetchone()
+    profile = dict(profile_row) if profile_row else {}
 
-    # Fetch from Devin API
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(
-                f"{DEVIN_API_URL}/session/{session_id}",
-                headers={"Authorization": f"Bearer {DEVIN_API_KEY}"}
-            )
-            if resp.status_code == 200:
-                devin_data = resp.json()
-            else:
-                devin_data = None
-    except Exception:
-        devin_data = None
+    apps_cursor = await db.execute("SELECT * FROM devbrain_apps WHERE user_id = ?", (user_id,))
+    apps = [dict(row) for row in await apps_cursor.fetchall()]
 
-    local = dict(local_row)
-
-    # Update local status from Devin API
-    if devin_data:
-        new_status = devin_data.get("status_enum", devin_data.get("status", local["status"]))
-        title = devin_data.get("title", "")
-        pr_url = ""
-        if devin_data.get("pull_request"):
-            pr_url = devin_data["pull_request"].get("url", "")
-
-        now = datetime.now(timezone.utc).isoformat()
-        await db.execute(
-            """UPDATE planter_sessions SET status = ?, title = ?, pr_url = ?, updated_at = ?
-               WHERE devin_session_id = ?""",
-            (new_status, title, pr_url, now, session_id)
+    # Load decisions and corrections for this project
+    decisions = []
+    corrections = []
+    if req.app_name:
+        dec_cursor = await db.execute(
+            "SELECT * FROM devbrain_decisions WHERE user_id = ? AND project = ? ORDER BY date", (user_id, req.app_name)
         )
-        await db.commit()
+        decisions = [dict(row) for row in await dec_cursor.fetchall()]
 
-        local["status"] = new_status
-        local["title"] = title
-        local["pr_url"] = pr_url
-        local["devin_data"] = {
-            "status": devin_data.get("status"),
-            "status_enum": devin_data.get("status_enum"),
-            "title": title,
-            "created_at": devin_data.get("created_at"),
-            "updated_at": devin_data.get("updated_at"),
-            "pull_request": devin_data.get("pull_request"),
-            "structured_output": devin_data.get("structured_output"),
+        cor_cursor = await db.execute(
+            "SELECT * FROM devbrain_corrections WHERE user_id = ? AND project = ? ORDER BY date", (user_id, req.app_name)
+        )
+        corrections = [dict(row) for row in await cor_cursor.fetchall()]
+
+    # Build enriched prompt
+    openai_client = await get_openai_client()
+    agent = DevBrainAgent(openai_client)
+    agent.set_profile(profile)
+    agent.set_apps(apps)
+
+    enriched_prompt = await agent.build_enriched_prompt(
+        original_prompt=req.prompt,
+        app_name=req.app_name,
+        decisions_history=decisions,
+        corrections_history=corrections,
+    )
+
+    # Create Devin session via API
+    manager = _get_session_manager()
+    result = await manager.create_session(enriched_prompt)
+    if not result:
+        raise HTTPException(status_code=502, detail="Failed to create Devin session. Check DEVIN_API_KEY and API availability.")
+
+    devin_session_id = result.get("session_id", "")
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Store in DB
+    cursor = await db.execute(
+        """INSERT INTO devbrain_sessions
+           (user_id, devin_session_id, app_name, original_prompt, enriched_prompt,
+            status, auto_monitor, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)""",
+        (
+            user_id,
+            devin_session_id,
+            req.app_name or "",
+            req.prompt,
+            enriched_prompt,
+            1 if req.auto_monitor else 0,
+            now, now,
+        ),
+    )
+    await db.commit()
+    session_id = cursor.lastrowid
+
+    # Start monitor if requested and not already running
+    if req.auto_monitor:
+        manager = _get_session_manager()
+        if not manager.is_monitoring:
+            manager.start_monitor(DATABASE_PATH)
+
+    return DevBrainSessionResponse(
+        id=session_id,
+        devin_session_id=devin_session_id,
+        app_name=req.app_name or "",
+        original_prompt=req.prompt,
+        enriched_prompt=enriched_prompt,
+        status="running",
+        auto_monitor=req.auto_monitor,
+        created_at=now,
+        updated_at=now,
+        last_checked_at=None,
+    )
+
+
+@app.get("/api/devbrain/sessions")
+async def devbrain_list_sessions(
+    status: str = "",
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """List all DevBrain-managed Devin sessions."""
+    user_id = int(current_user["sub"])
+    if status:
+        cursor = await db.execute(
+            "SELECT * FROM devbrain_sessions WHERE user_id = ? AND status = ? ORDER BY created_at DESC", (user_id, status)
+        )
+    else:
+        cursor = await db.execute("SELECT * FROM devbrain_sessions WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
+    sessions = [dict(row) for row in await cursor.fetchall()]
+    return sessions
+
+
+@app.get("/api/devbrain/sessions/{session_id}")
+async def devbrain_get_session(
+    session_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get a DevBrain session with its agent actions and current Devin status."""
+    user_id = int(current_user["sub"])
+    cursor = await db.execute("SELECT * FROM devbrain_sessions WHERE id = ? AND user_id = ?", (session_id, user_id))
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = dict(row)
+
+    # Get actions
+    actions_cursor = await db.execute(
+        "SELECT * FROM devbrain_actions WHERE session_id = ? ORDER BY created_at", (session_id,)
+    )
+    actions = [dict(r) for r in await actions_cursor.fetchall()]
+
+    # Get current Devin status
+    devin_status = None
+    manager = _get_session_manager()
+    if session.get("devin_session_id") and _get_devin_api_key():
+        health = await manager.check_session_health(session["devin_session_id"])
+        devin_status = {
+            "healthy": health.get("healthy"),
+            "status": health.get("status"),
+            "reason": health.get("reason"),
+            "last_activity": health.get("last_activity"),
         }
 
-    return local
+    return {
+        "session": session,
+        "actions": actions,
+        "devin_status": devin_status,
+    }
 
 
-@app.post("/api/planter/session/{session_id}/message")
-async def planter_send_message(
-    session_id: str,
-    req: PlanterMessageRequest,
+@app.post("/api/devbrain/sessions/{session_id}/review")
+async def devbrain_review_session(
+    session_id: int,
+    req: SessionReviewRequest,
     current_user: dict = Depends(get_current_user),
-    db: aiosqlite.Connection = Depends(get_db)
+    db: aiosqlite.Connection = Depends(get_db),
 ):
-    """Send a message/instruction to an active Devin session."""
-    if not DEVIN_API_KEY:
-        raise HTTPException(status_code=500, detail="Devin API key not configured")
+    """Have the DevBrain agent review a session and take action if needed."""
+    user_id = int(current_user["sub"])
+    cursor = await db.execute("SELECT * FROM devbrain_sessions WHERE id = ? AND user_id = ?", (session_id, user_id))
+    row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = dict(row)
+
+    devin_session_id = session["devin_session_id"]
+    manager = _get_session_manager()
+
+    # Get session messages from Devin
+    session_data = await manager.get_session_status(devin_session_id)
+    if not session_data:
+        raise HTTPException(status_code=502, detail="Could not fetch session from Devin API")
+
+    messages = session_data.get("messages", [])
+
+    # Load profile
+    profile_cursor = await db.execute("SELECT * FROM devbrain_profile WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
+    profile_row = await profile_cursor.fetchone()
+    profile = dict(profile_row) if profile_row else {}
+
+    # Create agent and review
+    openai_client = await get_openai_client()
+    agent = DevBrainAgent(openai_client)
+    agent.set_profile(profile)
+
+    review = await agent.review_session_output(
+        session_title=session.get("app_name", "Unknown"),
+        session_messages=messages,
+        app_name=session.get("app_name"),
+    )
+
+    now = datetime.now(timezone.utc).isoformat()
+    actions_taken = []
+
+    # Take action based on review
+    if review.get("needs_comment") and review.get("comment"):
+        comment = review["comment"]
+        sent = await manager.send_comment(devin_session_id, comment)
+        action_type = "correction" if review.get("review_result") == "needs_correction" else "comment"
+        await db.execute(
+            "INSERT INTO devbrain_actions (session_id, action_type, content, devin_response, created_at) VALUES (?, ?, ?, ?, ?)",
+            (session_id, action_type, comment, "sent" if sent else "failed", now),
+        )
+        actions_taken.append(f"{action_type}: {comment}")
+
+    if review.get("review_result") == "stalled" and not (review.get("needs_comment") and review.get("comment")):
+        nudge = await agent.generate_nudge(
+            session_title=session.get("app_name", "Unknown"),
+            last_activity="recent",
+        )
+        sent = await manager.send_comment(devin_session_id, nudge)
+        await db.execute(
+            "INSERT INTO devbrain_actions (session_id, action_type, content, devin_response, created_at) VALUES (?, ?, ?, ?, ?)",
+            (session_id, "nudge", nudge, "sent" if sent else "failed", now),
+        )
+        actions_taken.append(f"nudge: {nudge}")
+
+    if review.get("review_result") == "completed":
+        await db.execute(
+            "UPDATE devbrain_sessions SET status = 'completed', updated_at = ? WHERE id = ?",
+            (now, session_id),
+        )
+
+    # Update last checked
+    await db.execute(
+        "UPDATE devbrain_sessions SET last_checked_at = ?, updated_at = ? WHERE id = ?",
+        (now, now, session_id),
+    )
+    await db.commit()
+
+    return SessionReviewResponse(
+        session_id=devin_session_id,
+        review_result=review.get("review_result", "on_track"),
+        actions_taken=actions_taken,
+        details=review.get("details", ""),
+    )
+
+
+@app.post("/api/devbrain/monitor/start")
+async def devbrain_start_monitor(
+    current_user: dict = Depends(get_current_user),
+):
+    """Start the background session monitor."""
+    api_key = _get_devin_api_key()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="DEVIN_API_KEY not configured")
+
+    manager = _get_session_manager()
+    if manager.is_monitoring:
+        return {"message": "Monitor already running", "is_running": True}
+
+    manager.start_monitor(DATABASE_PATH, check_interval=300)
+    return {"message": "Monitor started (checking every 5 minutes)", "is_running": True}
+
+
+@app.post("/api/devbrain/monitor/stop")
+async def devbrain_stop_monitor(
+    current_user: dict = Depends(get_current_user),
+):
+    """Stop the background session monitor."""
+    manager = _get_session_manager()
+    manager.stop_monitor()
+    return {"message": "Monitor stopped", "is_running": False}
+
+
+@app.get("/api/devbrain/monitor/status", response_model=MonitorStatusResponse)
+async def devbrain_monitor_status(
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get the current status of the DevBrain monitor."""
+    manager = _get_session_manager()
 
     user_id = int(current_user["sub"])
+
+    # Count active sessions
     cursor = await db.execute(
-        "SELECT * FROM planter_sessions WHERE devin_session_id = ? AND user_id = ?",
-        (session_id, user_id)
+        "SELECT COUNT(*) as cnt FROM devbrain_sessions WHERE user_id = ? AND status IN ('running', 'created')", (user_id,)
     )
-    if not await cursor.fetchone():
-        raise HTTPException(status_code=404, detail="Session not found")
+    active = (await cursor.fetchone())["cnt"]
 
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(
-                f"{DEVIN_API_URL}/session/{session_id}/message",
-                headers={
-                    "Authorization": f"Bearer {DEVIN_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={"message": req.message}
-            )
-            if resp.status_code != 200:
-                raise HTTPException(
-                    status_code=resp.status_code,
-                    detail=f"Devin API error: {resp.text}"
-                )
-            return resp.json()
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Devin API timeout")
+    # Count total actions for this user's sessions
+    cursor = await db.execute(
+        "SELECT COUNT(*) as cnt FROM devbrain_actions WHERE session_id IN (SELECT id FROM devbrain_sessions WHERE user_id = ?)", (user_id,)
+    )
+    total_actions = (await cursor.fetchone())["cnt"]
+
+    return MonitorStatusResponse(
+        is_running=manager.is_monitoring,
+        active_sessions=active,
+        total_actions_taken=total_actions,
+        last_check_at=manager.last_check_at,
+    )
 
 
-# ==================== WATCHDOG + HEARTBEAT ====================
+@app.get("/api/devbrain/context/{app_name}")
+async def devbrain_get_context(
+    app_name: str,
+    current_user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get the full DevBrain context for a specific app — useful for previewing what enrichment would look like."""
+    user_id = int(current_user["sub"])
 
-class HeartbeatPayload(PydanticBaseModel):
-    host: str = ""
-    timestamp: str = ""
-    status: str = "alive"
-    services: dict = {}
-    autoFixed: list = []
+    # Get app info
+    cursor = await db.execute("SELECT * FROM devbrain_apps WHERE user_id = ? AND name = ?", (user_id, app_name))
+    app_row = await cursor.fetchone()
 
-@app.post("/heartbeat")
-async def heartbeat(payload: HeartbeatPayload):
-    return await watchdog.receive_heartbeat(payload.dict())
+    # Get decisions
+    dec_cursor = await db.execute(
+        "SELECT * FROM devbrain_decisions WHERE user_id = ? AND project = ? ORDER BY date", (user_id, app_name)
+    )
+    decisions = [dict(row) for row in await dec_cursor.fetchall()]
 
-@app.get("/watchdog/status")
-async def watchdog_status():
-    return watchdog.get_status()
+    # Get corrections
+    cor_cursor = await db.execute(
+        "SELECT * FROM devbrain_corrections WHERE user_id = ? AND project = ? ORDER BY date", (user_id, app_name)
+    )
+    corrections = [dict(row) for row in await cor_cursor.fetchall()]
 
+    # Get related sessions
+    ses_cursor = await db.execute(
+        "SELECT * FROM devbrain_sessions_metadata WHERE user_id = ? AND project = ? ORDER BY date", (user_id, app_name)
+    )
+    sessions = [dict(row) for row in await ses_cursor.fetchall()]
 
-# ==================== TASK QUEUE ====================
+    # Get profile
+    profile_cursor = await db.execute("SELECT * FROM devbrain_profile WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
+    profile_row = await profile_cursor.fetchone()
 
-class TaskCreate(PydanticBaseModel):
-    type: str
-    payload: dict
-    source: str = "user"
-
-class TaskComplete(PydanticBaseModel):
-    result: dict = None
-    error: str = None
-
-@app.post("/queue/task")
-async def queue_task(body: TaskCreate):
-    task = task_queue.enqueue(body.type, body.payload, body.source)
-    return {"ok": True, "taskId": task["id"]}
-
-@app.get("/queue/tasks")
-async def get_tasks():
-    return {"tasks": task_queue.dequeue()}
-
-@app.post("/queue/task/{task_id}/done")
-async def complete_task(task_id: str, body: TaskComplete):
-    ok = task_queue.complete(task_id, body.result, body.error)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Task nenájdený")
-    return {"ok": True}
-
-@app.post("/queue/task/{task_id}/retry")
-async def retry_task(task_id: str):
-    ok = task_queue.retry(task_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Task nenájdený")
-    return {"ok": True}
-
-@app.get("/queue/status")
-async def queue_status():
-    return task_queue.status_summary()
+    return {
+        "app": dict(app_row) if app_row else None,
+        "decisions": decisions,
+        "corrections": corrections,
+        "sessions": sessions,
+        "profile": dict(profile_row) if profile_row else None,
+    }

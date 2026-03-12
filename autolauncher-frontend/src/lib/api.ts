@@ -230,12 +230,12 @@ export interface HelixaIdea {
     };
   };
   valuation: {
-    summary?: Record<string, unknown>;
+    summary?: { valuation_range_low: string; valuation_range_high: string; recommended_valuation: string; confidence_level: string; stage_assessment: string };
     revenue_multiples?: { arpu_monthly: number; arpu_rationale: string; ev_revenue_multiple: number; multiple_rationale: string; growth_rate_assumption: string; scenarios: { scenario: string; year3_users: number; year3_arr: string; implied_valuation: string }[] };
     comparable_companies?: { comps: { name: string; description: string; valuation_or_multiple: string; relevance: string }[]; early_stage_discount: string; implied_range: string };
-    berkus_method?: Record<string, unknown>;
+    berkus_method?: { factors: { factor: string; value: number; rationale: string }[]; total_valuation: string };
     scorecard_method?: { base_valuation: string; adjustments: { factor: string; weight: number; comparison: number; rationale: string }[]; adjusted_valuation: string };
-    unit_economics?: Record<string, unknown>;
+    unit_economics?: { arpu_monthly: number; cac: number; ltv: number; ltv_cac_ratio: number; gross_margin_pct: number; cac_payback_months: number; unit_economics_verdict: string; notes: string };
     methodology_note?: string;
     risk_factors?: string[];
     upside_catalysts?: string[];
@@ -312,35 +312,121 @@ export interface HelixaExperimentalStats {
   success_rate: number;
 }
 
-// ==================== PLANTER TYPES ====================
+// ==================== DEVBRAIN TYPES ====================
 
-export interface PlanterSession {
+export interface DevBrainProfile {
   id: number;
   user_id: number;
-  idea_id: number | null;
-  idea_name: string;
-  devin_session_id: string;
-  session_url: string;
-  status: string;
-  title: string;
-  pr_url: string;
-  frontend_url: string;
-  backend_url: string;
-  repo_url: string;
+  preferred_tech_stack: string;
+  coding_conventions: string;
+  architectural_preferences: string;
+  communication_style: string;
+  frustrations: string;
+  what_works_well: string;
+  work_patterns: string;
+  key_principles: string;
   created_at: string;
   updated_at: string;
 }
 
-export interface PlanterSessionDetail extends PlanterSession {
-  devin_data?: {
-    status: string;
-    status_enum: string;
-    title: string;
-    created_at: string;
-    updated_at: string;
-    pull_request: { url: string } | null;
-    structured_output: Record<string, unknown> | null;
-  };
+export interface DevBrainApp {
+  id: number;
+  user_id: number;
+  name: string;
+  description: string;
+  status: string;
+  tech_stack: string;
+  requirements: string;
+  related_sessions: string;
+  session_count: number;
+  priority: string;
+  created_at: string;
+}
+
+export interface DevBrainDecision {
+  id: number;
+  user_id: number;
+  date: string;
+  session_id: string;
+  project: string;
+  decision: string;
+  context: string;
+  created_at: string;
+}
+
+export interface DevBrainCorrection {
+  id: number;
+  user_id: number;
+  date: string;
+  session_id: string;
+  project: string;
+  correction: string;
+  created_at: string;
+}
+
+export interface DevBrainSessionMeta {
+  id: number;
+  user_id: number;
+  devin_session_id: string;
+  date: string;
+  title: string;
+  project: string;
+  goals: string;
+  decisions: string;
+  corrections: string;
+  preferences: string;
+  outcome: string;
+  outcome_detail: string;
+  tech_stack: string;
+  app_requirements: string;
+  patterns: string;
+  created_at: string;
+}
+
+export interface DevBrainSession {
+  id: number;
+  user_id: number;
+  devin_session_id: string;
+  app_name: string;
+  original_prompt: string;
+  enriched_prompt: string;
+  status: string;
+  auto_monitor: number;
+  created_at: string;
+  updated_at: string;
+  last_checked_at: string | null;
+}
+
+export interface DevBrainAction {
+  id: number;
+  session_id: number;
+  action_type: string;
+  content: string;
+  devin_response: string;
+  created_at: string;
+}
+
+export interface DevBrainMonitorStatus {
+  is_running: boolean;
+  active_sessions: number;
+  total_actions_taken: number;
+  last_check_at: string | null;
+}
+
+export interface DevBrainContext {
+  app: DevBrainApp | null;
+  decisions: DevBrainDecision[];
+  corrections: DevBrainCorrection[];
+  sessions: DevBrainSessionMeta[];
+  profile: DevBrainProfile | null;
+}
+
+export interface DevBrainImportResponse {
+  message: string;
+  apps_imported: number;
+  decisions_imported: number;
+  corrections_imported: number;
+  sessions_imported: number;
 }
 
 // ==================== API ====================
@@ -352,8 +438,6 @@ export const api = {
     login: (email: string, password: string) =>
       request<AuthResponse>('/api/auth/login', { method: 'POST', body: { email, password } }),
     me: () => request<User>('/api/auth/me'),
-    guestAccess: (guest_token: string) =>
-      request<AuthResponse>('/api/auth/guest-access', { method: 'POST', body: { guest_token } }),
   },
   credentials: {
     status: () => request<CredentialStatus[]>('/api/credentials/status'),
@@ -371,8 +455,8 @@ export const api = {
       request<Project>('/api/projects', { method: 'POST', body: data }),
     update: (id: number, data: Partial<Project>) =>
       request<Project>(`/api/projects/${id}`, { method: 'PUT', body: data }),
-    delete: (id: number, password: string) =>
-      request<{ message: string }>(`/api/projects/${id}/delete`, { method: 'POST', body: { password } }),
+    delete: (id: number) =>
+      request<{ message: string }>(`/api/projects/${id}`, { method: 'DELETE' }),
   },
   questionnaire: {
     questions: () => request<QuestionnaireQuestion[]>('/api/questionnaire/questions'),
@@ -428,6 +512,26 @@ export const api = {
     list: () =>
       request<Array<{ id: number; credential_type: string; message: string; screenshot_base64: string; status: string; created_at: string }>>('/api/setup-feedback'),
   },
+  devbrain: {
+    profile: () => request<DevBrainProfile>('/api/devbrain/profile'),
+    apps: () => request<DevBrainApp[]>('/api/devbrain/apps'),
+    decisions: (project?: string) =>
+      request<DevBrainDecision[]>(project ? `/api/devbrain/decisions?project=${encodeURIComponent(project)}` : '/api/devbrain/decisions'),
+    corrections: (project?: string) =>
+      request<DevBrainCorrection[]>(project ? `/api/devbrain/corrections?project=${encodeURIComponent(project)}` : '/api/devbrain/corrections'),
+    sessionsMeta: () => request<DevBrainSessionMeta[]>('/api/devbrain/sessions-metadata'),
+    sessions: (status?: string) =>
+      request<DevBrainSession[]>(status ? `/api/devbrain/sessions?status=${status}` : '/api/devbrain/sessions'),
+    sessionDetail: (id: number) => request<{ session: DevBrainSession; actions: DevBrainAction[]; devin_status: Record<string, unknown> | null }>(`/api/devbrain/sessions/${id}`),
+    context: (appName: string) => request<DevBrainContext>(`/api/devbrain/context/${encodeURIComponent(appName)}`),
+    monitorStatus: () => request<DevBrainMonitorStatus>('/api/devbrain/monitor/status'),
+    monitorStart: () => request<{ message: string }>('/api/devbrain/monitor/start', { method: 'POST' }),
+    monitorStop: () => request<{ message: string }>('/api/devbrain/monitor/stop', { method: 'POST' }),
+    createSession: (data: { app_name?: string; prompt: string; auto_monitor?: boolean }) =>
+      request<DevBrainSession>('/api/devbrain/sessions', { method: 'POST', body: data }),
+    importMetadata: (data: { user_profile: Record<string, unknown>; apps_catalog: Record<string, unknown>[]; decisions_log: Record<string, unknown>[]; corrections_log: Record<string, unknown>[]; sessions_metadata: Record<string, unknown>[] }) =>
+      request<DevBrainImportResponse>('/api/devbrain/import', { method: 'POST', body: data }),
+  },
   helixa: {
     ideas: {
       list: () => request<HelixaIdeaSummary[]>('/api/helixa/ideas'),
@@ -464,13 +568,5 @@ export const api = {
       delete: (id: number) => request<{ message: string }>(`/api/helixa/experimental/${id}`, { method: 'DELETE' }),
     },
     importData: () => request<{ message: string; imported: { ideas: number; synthesized: number; experimental: number } }>('/api/helixa/import', { method: 'POST' }),
-  },
-  planter: {
-    build: (data: { idea_id?: number; idea_name: string; idea_description?: string; custom_prompt?: string }) =>
-      request<{ session_id: string; session_url: string; status: string; message: string }>('/api/planter/build', { method: 'POST', body: data }),
-    sessions: () => request<PlanterSession[]>('/api/planter/sessions'),
-    getSession: (sessionId: string) => request<PlanterSessionDetail>(`/api/planter/session/${sessionId}`),
-    sendMessage: (sessionId: string, message: string) =>
-      request<Record<string, unknown>>(`/api/planter/session/${sessionId}/message`, { method: 'POST', body: { message } }),
   },
 };
