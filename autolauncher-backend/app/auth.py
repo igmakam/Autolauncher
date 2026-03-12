@@ -2,11 +2,22 @@ import jwt
 import bcrypt
 import os
 import secrets
+import logging
 from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException, Depends, Header
 from typing import Optional
 
-SECRET_KEY = os.getenv("JWT_SECRET", "autolauncher-pro-secret-key-change-in-production")
+logger = logging.getLogger(__name__)
+
+_jwt_secret = os.getenv("JWT_SECRET", "")
+if not _jwt_secret:
+    logger.warning(
+        "JWT_SECRET not set — generating ephemeral secret. "
+        "Set JWT_SECRET env var for production to persist tokens across restarts."
+    )
+    _jwt_secret = secrets.token_urlsafe(64)
+
+SECRET_KEY: str = _jwt_secret
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
 GUEST_LINK_EXPIRE_HOURS = 48

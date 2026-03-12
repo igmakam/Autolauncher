@@ -1,10 +1,14 @@
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File, Form
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from collections import defaultdict
 import aiosqlite
 import json
 import os
+import time
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -53,14 +57,100 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Auto Launch API", lifespan=lifespan)
 
-# Disable CORS. Do not remove this for full-stack development.
+# ---------------------------------------------------------------------------
+# Security: CORS – restrict to known frontend origins
+# ---------------------------------------------------------------------------
+_CORS_ORIGINS_ENV = os.getenv("CORS_ORIGINS", "")
+ALLOWED_ORIGINS = [
+    o.strip()
+    for o in _CORS_ORIGINS_ENV.split(",")
+    if o.strip()
+] if _CORS_ORIGINS_ENV else [
+    # Development
+    "http://localhost:5173",
+    "http://localhost:3000",
+    # Production
+    "https://autolauncher.vercel.app",
+    "https://launch-readiness-audit-app-chlckr3f.devinapps.com",
+]
+
+
+# ---------------------------------------------------------------------------
+# Security: Rate Limiting – 120 requests / minute per IP
+# ---------------------------------------------------------------------------
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Simple in-memory sliding-window rate limiter."""
+
+    def __init__(self, app, max_requests: int = 120, window_seconds: int = 60):
+        super().__init__(app)
+        self.max_requests = max_requests
+        self.window = window_seconds
+        self._hits: dict[str, list[float]] = defaultdict(list)
+
+    async def dispatch(self, request: Request, call_next):
+        # Skip rate limiting for CORS preflight requests
+        if request.method == "OPTIONS":
+            return await call_next(request)
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.time()
+        # Prune old entries and evict stale IPs to prevent unbounded memory growth
+        hits = [t for t in self._hits[client_ip] if t > now - self.window]
+        if not hits:
+            self._hits.pop(client_ip, None)
+            hits = []
+        else:
+            self._hits[client_ip] = hits
+        if len(hits) >= self.max_requests:
+            return Response(
+                content='{"detail":"Rate limit exceeded. Try again later."}',
+                status_code=429,
+                media_type="application/json",
+            )
+        self._hits[client_ip].append(now)
+        return await call_next(request)
+
+
+app.add_middleware(RateLimitMiddleware, max_requests=120, window_seconds=60)
+
+
+# ---------------------------------------------------------------------------
+# Security: Response Headers (HSTS, X-Content-Type, X-Frame, CSP)
+# ---------------------------------------------------------------------------
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=63072000; includeSubDomains; preload"
+        )
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# CORS must be added LAST so it is the outermost middleware (Starlette
+# processes in reverse add-order).  This ensures that ALL responses —
+# including 429 from the rate limiter — carry the proper CORS headers.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
+@app.get("/")
+async def root():
+    return {
+        "app": "AutoLauncher",
+        "version": "1.0.0",
+        "docs": "/docs",
+        "health": "/healthz",
+    }
+
 
 @app.get("/healthz")
 async def healthz():
